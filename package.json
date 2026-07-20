@@ -18,7 +18,7 @@
     "package:legacy": "npm run package",
     "dist": "npm run build:helpers && electron-builder --mac --arm64",
     "dist:dir": "npm run build:helpers && electron-builder --mac --arm64 --dir",
-    "sign": "codesign --force --sign \"Glow Secretary Local Signing\" 'dist/貼身小秘書-darwin-arm64/貼身小秘書.app'",
+    "sign": "codesign --force --deep --sign \"Glow Secretary Local Signing\" 'dist/貼身小秘書-darwin-arm64/貼身小秘書.app'",
     "notarize": "echo 'Notarization requires Apple Developer account. Set APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (or use @keychain:AC_PASSWORD). For electron-builder, set env vars before npm run dist.' && echo 'See README for full distribution steps.'"
   },
   "devDependencies": {
