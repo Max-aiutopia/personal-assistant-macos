@@ -854,6 +854,8 @@ select:focus {
 }
 
 .month-grid {
+  width: 100%;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: white;
@@ -864,7 +866,9 @@ select:focus {
 .month-weekdays,
 .month-days {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 
 .month-weekdays {
@@ -881,6 +885,7 @@ select:focus {
 }
 
 .month-cell {
+  min-width: 0;
   min-height: 104px;
   padding: 7px 8px;
   border-right: 1px solid #f0edf7;
@@ -916,10 +921,13 @@ select:focus {
 .month-chips {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   gap: 3px;
 }
 
 .month-chip {
+  min-width: 0;
+  max-width: 100%;
   padding: 2px 6px;
   border-radius: 6px;
   font-size: 10px;

@@ -174,6 +174,41 @@ async function main() {
       const latest = await window.assistantAPI.getData();
       const event = latest.tasks.find((task) => task.title === ${JSON.stringify(TEST_EVENT_TITLE)});
       document.querySelector('[data-route="month"]').click();
+      const monthGrid = document.querySelector('#month-grid');
+      const monthDays = monthGrid.querySelector('.month-days');
+      const monthHeaders = [...monthGrid.querySelectorAll('.month-weekday')];
+      const monthCells = [...monthDays.querySelectorAll(':scope > .month-cell')];
+      const firstWeekCells = monthCells.slice(0, 7);
+      const layoutProbe = document.createElement('div');
+      layoutProbe.className = 'month-chip event';
+      layoutProbe.textContent = '23:45 這是一段用來確認七欄不會被長行程名稱撐開的版面測試文字';
+      firstWeekCells.find((cell) => !cell.classList.contains('empty')).append(layoutProbe);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const monthGridRect = monthGrid.getBoundingClientRect();
+      const monthHeaderRects = monthHeaders.map((header) => header.getBoundingClientRect());
+      const firstWeekRects = firstWeekCells.map((cell) => cell.getBoundingClientRect());
+      const firstWeekWidths = firstWeekRects.map((rect) => rect.width);
+      const tolerance = 1;
+      const monthLayout = {
+        sevenColumns: monthHeaders.length === 7 && firstWeekCells.length === 7,
+        equalColumns: Math.max(...firstWeekWidths) - Math.min(...firstWeekWidths) <= tolerance,
+        headerBodyAligned: monthHeaderRects.every(
+          (rect, index) =>
+            Math.abs(rect.left - firstWeekRects[index].left) <= tolerance &&
+            Math.abs(rect.right - firstWeekRects[index].right) <= tolerance
+        ),
+        saturdayVisible: monthCells
+          .filter((_, index) => index % 7 === 6)
+          .every((cell) => cell.getBoundingClientRect().right <= monthGridRect.right + tolerance),
+        noHorizontalOverflow:
+          monthDays.scrollWidth <= monthDays.clientWidth + tolerance &&
+          monthGrid.scrollWidth <= monthGrid.clientWidth + tolerance,
+        insideViewport:
+          monthGridRect.left >= -tolerance &&
+          monthGridRect.right <= document.documentElement.clientWidth + tolerance,
+        widthDelta: Math.max(...firstWeekWidths) - Math.min(...firstWeekWidths)
+      };
+      layoutProbe.remove();
       const monthChip = [...document.querySelectorAll('.month-chip')].find((item) =>
         item.textContent.includes(${JSON.stringify(TEST_EVENT_TITLE)})
       );
@@ -201,6 +236,7 @@ async function main() {
         endTimeVisible,
         eventKind: event?.kind,
         eventEndTime: event?.endTime,
+        monthLayout,
         monthDialogDeleteVisible,
         eventInTaskList,
         overdueVisible,
@@ -216,6 +252,12 @@ async function main() {
       !calendarUi.endTimeVisible ||
       calendarUi.eventKind !== "event" ||
       calendarUi.eventEndTime !== "15:00" ||
+      !calendarUi.monthLayout.sevenColumns ||
+      !calendarUi.monthLayout.equalColumns ||
+      !calendarUi.monthLayout.headerBodyAligned ||
+      !calendarUi.monthLayout.saturdayVisible ||
+      !calendarUi.monthLayout.noHorizontalOverflow ||
+      !calendarUi.monthLayout.insideViewport ||
       !calendarUi.monthDialogDeleteVisible ||
       calendarUi.eventInTaskList ||
       !calendarUi.overdueVisible ||

@@ -18,7 +18,8 @@ swiftc "$ROOT/native/VoiceRecognizer.swift" \
   -Xlinker "$ROOT/build/VoiceRecognizer-Info.plist"
 # 用固定憑證簽章（TCC 權限綁憑證，更新不會重置）；找不到就明確失敗。
 SIGN_ID="${GLOW_SIGN_ID:-Glow Secretary Local Signing}"
-if ! security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
+if ! security find-certificate -c "$SIGN_ID" >/dev/null 2>&1 ||
+  ! security find-key -s -t private -l "$SIGN_ID" >/dev/null 2>&1; then
   echo "錯誤：找不到程式碼簽章憑證：$SIGN_ID" >&2
   exit 1
 fi
