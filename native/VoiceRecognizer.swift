@@ -3,8 +3,9 @@ import Foundation
 import Speech
 
 final class VoiceRecognizer {
-    private let silenceTimeout: TimeInterval = 3
-    private let maximumListeningTime: TimeInterval = 30
+    private let openingTimeout: TimeInterval = 10
+    private let silenceTimeout: TimeInterval = 5
+    private let maximumListeningTime: TimeInterval = 60
     private let audioEngine = AVAudioEngine()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-TW"))
     private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -95,8 +96,17 @@ final class VoiceRecognizer {
 
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             recognitionRequest.append(buffer)
+            guard let self, !self.latestText.isEmpty,
+                  let channel = buffer.floatChannelData?[0] else { return }
+            let count = Int(buffer.frameLength)
+            guard count > 0 else { return }
+            var sum: Float = 0
+            for index in 0..<count { sum += channel[index] * channel[index] }
+            if sqrt(sum / Float(count)) > 0.01 {
+                DispatchQueue.main.async { self.resetSilenceTimer() }
+            }
         }
 
         do {
@@ -109,7 +119,7 @@ final class VoiceRecognizer {
         }
 
         emit(type: "ready")
-        resetSilenceTimer()
+        resetOpeningTimer()
         let maximumWorkItem = DispatchWorkItem { [weak self] in
             self?.finishWithLatestText()
         }
@@ -130,7 +140,7 @@ final class VoiceRecognizer {
                     }
                     if result.isFinal {
                         if self.latestText.isEmpty {
-                            self.emit(type: "error", message: "3 秒內沒有聽到聲音，已自動結束。")
+                            self.emit(type: "error", message: "沒有聽到聲音，已自動結束。")
                             self.finish(exitCode: 7)
                             return
                         }
@@ -163,9 +173,18 @@ final class VoiceRecognizer {
         DispatchQueue.main.asyncAfter(deadline: .now() + silenceTimeout, execute: silenceWorkItem)
     }
 
+    private func resetOpeningTimer() {
+        silenceWorkItem?.cancel()
+        let openingWorkItem = DispatchWorkItem { [weak self] in
+            self?.finishWithLatestText()
+        }
+        silenceWorkItem = openingWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + openingTimeout, execute: openingWorkItem)
+    }
+
     private func finishWithLatestText() {
         if latestText.isEmpty {
-            emit(type: "error", message: "3 秒內沒有聽到聲音，已自動結束。")
+            emit(type: "error", message: "沒有聽到聲音，已自動結束。")
             finish(exitCode: 7)
         } else {
             emit(type: "final", text: latestText)

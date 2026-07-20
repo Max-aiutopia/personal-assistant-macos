@@ -768,8 +768,8 @@ function handleVoiceCommand(inputData, rawText, now = new Date()) {
     return {
       data,
       response: `已把「${event.title}」標記為 ${responseStatusSpeak(status)}。`,
-      hide: true,
-      route: "week"
+      hide: false,
+      route: null
     };
   }
 
@@ -811,8 +811,8 @@ function handleVoiceCommand(inputData, rawText, now = new Date()) {
     return {
       data,
       response: `已把「${event.title}」改到${dateLabel}${timeLabel}。`,
-      hide: true,
-      route: "week"
+      hide: false,
+      route: null
     };
   }
 

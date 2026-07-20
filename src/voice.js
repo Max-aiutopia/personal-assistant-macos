@@ -10,6 +10,9 @@ const orbButton = document.querySelector("#voice-orb");
 let isListening = false;
 let isProcessing = false;
 let autoHideTimer;
+let activeUtterance;
+let speechWatchdog;
+let sessionGeneration = 0;
 let conversationId = "";
 let conversationTurns = [];
 const VOICE_HISTORY_LIMIT = 12;
@@ -56,16 +59,21 @@ function clearAutoHide() {
 function scheduleAutoHide(delay = 8000) {
   clearAutoHide();
   if (!settings.voiceAutoHide) return;
-  autoHideTimer = setTimeout(() => api.hideVoice(), delay);
+  autoHideTimer = setTimeout(() => {
+    if (!isListening) api.hideVoice();
+  }, delay);
 }
 
 function stopListening() {
   if (!isListening) return;
   api.stopVoiceListening();
   isListening = false;
+  setState("idle", "已停止，按一下小光繼續說");
 }
 
 function stopSpeaking() {
+  clearTimeout(speechWatchdog);
+  activeUtterance = undefined;
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
 }
 
@@ -129,43 +137,58 @@ function speak(text, onDone) {
   }
 
   const utterance = new SpeechSynthesisUtterance(prepareSpokenReply(text));
+  activeUtterance = utterance;
   utterance.lang = "zh-TW";
   utterance.rate = 0.92;
   utterance.pitch = 1.08;
   utterance.volume = 0.98;
   utterance.voice = chooseWarmChineseVoice();
   utterance.onstart = () => setState("speaking", "小光正在回答");
-  utterance.onend = () => {
-    setState("idle", "按一下可以繼續說");
+  let finished = false;
+  const finish = (message) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(speechWatchdog);
+    activeUtterance = undefined;
+    setState("idle", message);
     onDone?.();
   };
-  utterance.onerror = () => {
-    setState("idle", "回覆已顯示在畫面上");
-    onDone?.();
-  };
+  utterance.onend = () => finish("按一下可以繼續說");
+  utterance.onerror = () => finish("回覆已顯示在畫面上");
+  speechWatchdog = setTimeout(
+    () => finish("回覆已顯示在畫面上"),
+    Math.min(4000 + String(text || "").length * 250, 20000)
+  );
   window.speechSynthesis.speak(utterance);
 }
 
 async function processTranscript(transcript) {
   if (!transcript || isProcessing) return;
   isProcessing = true;
+  const generation = sessionGeneration;
   isListening = false;
   transcriptElement.textContent = transcript;
   const thinkingLabel = (settings.aiVoiceEnabled) ? "小光正在用 AI 思考…" : "我正在處理這句話";
   setState("thinking", thinkingLabel);
 
   try {
-    const result = await api.processVoice(transcript, {
-      conversationId,
-      history: conversationTurns
-    });
+    const processTimeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("voice-process-timeout")), 45000)
+    );
+    const result = await Promise.race([
+      api.processVoice(transcript, { conversationId, history: conversationTurns }),
+      processTimeout
+    ]);
+    if (generation !== sessionGeneration) return;
     settings = { ...settings, ...(result.settings || {}) };
     responseElement.textContent = result.response;
     rememberConversationTurn(transcript, result.response);
     speak(result.response, () => {
       isProcessing = false;
-      if (result.hide) {
-        scheduleAutoHide(1800);
+      if (settings.voiceAutoListen && !result.hide) {
+        startListening();
+      } else if (result.hide) {
+        scheduleAutoHide(5000);
       } else {
         scheduleAutoHide();
       }
@@ -174,7 +197,6 @@ async function processTranscript(transcript) {
     isProcessing = false;
     responseElement.textContent = "剛才沒有處理成功，請再說一次。";
     setState("error", "處理失敗");
-    scheduleAutoHide();
   }
 }
 
@@ -194,6 +216,11 @@ async function startListening() {
 
 async function prepareVoice() {
   clearAutoHide();
+  sessionGeneration += 1;
+  isProcessing = false;
+  isListening = false;
+  stopSpeaking();
+  await api.stopVoiceListening();
   resetConversation();
   const data = await api.getData();
   settings = { ...settings, ...(data.settings || {}) };
@@ -220,11 +247,17 @@ card.addEventListener("mouseenter", clearAutoHide);
 api.getVoiceShortcut().then((shortcut) => {
   document.querySelector("#shortcut-label").textContent = `${shortcut} 呼叫`;
 });
+api.onVoiceShortcutChanged((shortcut) => {
+  document.querySelector("#shortcut-label").textContent = `${shortcut} 呼叫`;
+});
 api.onVoiceStart(prepareVoice);
 api.onVoiceStop(() => {
   clearAutoHide();
   stopListening();
   stopSpeaking();
+  isProcessing = false;
+  isListening = false;
+  sessionGeneration += 1;
   resetConversation();
 });
 api.onVoicePreview(async () => {
@@ -240,8 +273,8 @@ api.onNativeVoiceEvent((event) => {
   if (event.type === "ready") {
     isListening = true;
     transcriptElement.textContent = "正在聽你說話…";
-    responseElement.textContent = "說完停頓 3 秒，我就會自動送出。";
-    setState("listening", "請說，停頓 3 秒後結束");
+    responseElement.textContent = "開始說話後，安靜約 5 秒我會自動送出。";
+    setState("listening", "請說，安靜約 5 秒後結束");
     return;
   }
   if (event.type === "partial") {
@@ -257,7 +290,6 @@ api.onNativeVoiceEvent((event) => {
     isListening = false;
     responseElement.textContent = event.message || "語音辨識暫時無法使用，請再試一次。";
     setState("error", "語音辨識需要注意");
-    scheduleAutoHide(3000);
   }
 });
 api.onDataChanged((data) => {

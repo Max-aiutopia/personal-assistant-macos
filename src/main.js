@@ -1,9 +1,11 @@
 const path = require("node:path");
 const fs = require("node:fs");
+const os = require("node:os");
 const { spawn, spawnSync } = require("node:child_process");
 const {
   app,
   BrowserWindow,
+  crashReporter,
   globalShortcut,
   ipcMain,
   Menu,
@@ -14,6 +16,22 @@ const {
   shell,
   Tray
 } = require("electron");
+
+crashReporter.start({ uploadToServer: false });
+const logDirectory = path.join(app.getPath("userData"), "logs");
+const logPath = path.join(logDirectory, "main.log");
+function writeDiagnostic(kind, detail) {
+  try {
+    fs.mkdirSync(logDirectory, { recursive: true });
+    if (fs.existsSync(logPath) && fs.statSync(logPath).size > 1024 * 1024) {
+      fs.renameSync(logPath, `${logPath}.1`);
+    }
+    const rendered = detail instanceof Error ? detail.stack : String(detail);
+    fs.appendFileSync(logPath, `${new Date().toISOString()} [${kind}] ${rendered}\n`);
+  } catch {}
+}
+process.on("uncaughtException", (error) => writeDiagnostic("uncaughtException", error));
+process.on("unhandledRejection", (reason) => writeDiagnostic("unhandledRejection", reason));
 const { createStore } = require("./store");
 // electron-updater 為選用：缺少時 App 仍須能啟動（避免 MODULE_NOT_FOUND 在頂層崩潰）
 let autoUpdater = null;
@@ -40,7 +58,7 @@ const { processJsonLines } = require("./nativeBridge");
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 
-const ALLOWED_ROUTES = ["today", "tasks", "week", "journal", "settings"];
+const ALLOWED_ROUTES = ["today", "tasks", "week", "month", "journal", "settings"];
 
 let mainWindow;
 let voiceWindow;
@@ -52,6 +70,7 @@ let calendarSyncTimer;
 let calendarSyncDebounce;
 let calendarSyncPromise;
 let trashCleanupTimer;
+let shortcutRetryTimer;
 let isQuitting = false;
 let voiceShortcut = "Alt+Space";
 let voiceRecognizerSession;
@@ -66,6 +85,7 @@ function getAppIcon() {
 
 // Electron 安全基線：禁止彈出新視窗與離開本地頁面的導航；外部連結一律走 shell.openExternal
 function hardenWebContents(contents) {
+  contents.on("render-process-gone", (_, details) => writeDiagnostic("render-process-gone", JSON.stringify(details)));
   contents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
     return { action: "deny" };
@@ -489,16 +509,16 @@ function startNativeVoiceRecognition() {
     });
   });
 
-  child.stderr.on("data", (chunk) => {
-    // Optional: surface native stderr for debugging if needed
-  });
+  child.stderr.on("data", (chunk) => writeDiagnostic("voice-helper", chunk.toString("utf8").trim()));
 
-  child.on("error", () => {
+  child.on("error", (error) => {
+    writeDiagnostic("voice-helper-error", error);
     cleanUpVoiceSession(session);
     sendNativeVoiceEvent({ type: "error", message: "無法啟動 macOS 語音辨識。" });
   });
 
-  child.on("exit", (code) => {
+  child.on("exit", (code, signal) => {
+    writeDiagnostic("voice-helper-exit", `code=${code} signal=${signal || ""}`);
     // Process any remaining buffered lines using shared helper
     if (session.bufferedOutput.trim()) {
       session.bufferedOutput = processJsonLines(session.bufferedOutput, (payload) => {
@@ -512,9 +532,17 @@ function startNativeVoiceRecognition() {
     const shouldReportFailure = !session.stopped && !session.receivedTerminalEvent;
     cleanUpVoiceSession(session);
     if (shouldReportFailure) {
+      const messages = {
+        2: "需要允許語音辨識權限。",
+        3: "需要允許麥克風權限。",
+        4: "macOS 語音辨識目前無法使用。",
+        5: "無法啟動麥克風。",
+        6: "這次沒有辨識到語音，請再試一次。",
+        7: "沒有聽到聲音，請再說一次。"
+      };
       sendNativeVoiceEvent({
         type: "error",
-        message: "macOS 語音元件啟動失敗，請重新允許麥克風與語音辨識權限。"
+        message: messages[code] || "macOS 語音元件啟動失敗，請再試一次。"
       });
     }
   });
@@ -539,11 +567,27 @@ function registerVoiceShortcut() {
   for (const accelerator of candidates) {
     if (globalShortcut.register(accelerator, showVoiceWindow)) {
       voiceShortcut = accelerator;
+      if (accelerator !== "Alt+Space") {
+        new Notification({
+          title: "快捷鍵已變更",
+          body: "⌥ Space 目前無法使用，暫時改用 ⌘⇧Space 呼叫。若仍沒反應，請檢查 ChatGPT 等 App 的快捷鍵設定。"
+        }).show();
+      }
       return;
     }
   }
   voiceShortcut = "";
   console.error("Unable to register a global voice shortcut.");
+  new Notification({ title: "快捷鍵無法使用", body: "請用選單列圖示呼叫，並檢查其他 App 的快捷鍵設定。" }).show();
+}
+
+function retryPreferredShortcut() {
+  if (voiceShortcut === "Alt+Space") return;
+  if (!globalShortcut.register("Alt+Space", showVoiceWindow)) return;
+  if (voiceShortcut) globalShortcut.unregister(voiceShortcut);
+  voiceShortcut = "Alt+Space";
+  buildTray();
+  voiceWindow?.webContents.send("shortcut-changed", shortcutLabel());
 }
 
 function shortcutLabel() {
@@ -557,7 +601,7 @@ function buildTray() {
   if (!icon) return;
 
   const assistantName = store.read().settings.assistantName || "小光";
-  tray = new Tray(icon.resize({ width: 18, height: 18 }));
+  if (!tray) tray = new Tray(icon.resize({ width: 18, height: 18 }));
   tray.setToolTip("貼身小秘書");
   tray.setContextMenu(
     Menu.buildFromTemplate([
@@ -574,7 +618,28 @@ function buildTray() {
       { label: "結束貼身小秘書", click: () => app.quit() }
     ])
   );
+  tray.removeAllListeners("click");
   tray.on("click", showVoiceWindow);
+}
+
+function buildApplicationMenu() {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: "貼身小秘書", submenu: [
+      { label: "關於貼身小秘書", role: "about" },
+      { type: "separator" },
+      { label: "隱藏視窗", accelerator: "Command+Q", click: () => {
+        mainWindow?.hide();
+        hideVoiceWindow();
+        new Notification({ title: "貼身小秘書仍在背景待命", body: "Option+Space 隨時召喚；要完全結束請用選單列圖示。" }).show();
+      } },
+      { label: "結束貼身小秘書", accelerator: "Command+Option+Q", click: () => app.quit() }
+    ] },
+    { label: "編輯", submenu: [
+      { role: "undo" }, { role: "redo" }, { type: "separator" },
+      { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" }
+    ] },
+    { label: "視窗", submenu: [{ role: "minimize" }, { role: "close" }] }
+  ]));
 }
 
 function sendDataChanged(data) {
@@ -676,8 +741,7 @@ function registerIpc() {
   ipcMain.handle("data:path", () => store.dataPath);
   ipcMain.handle("settings:login", (_, enabled) => {
     app.setLoginItemSettings({
-      openAtLogin: Boolean(enabled),
-      openAsHidden: true
+      openAtLogin: Boolean(enabled)
     });
     return app.getLoginItemSettings().openAtLogin;
   });
@@ -769,10 +833,11 @@ function registerIpc() {
       scheduleCalendarSync();
     }
 
-    if (route) showMainWindow(route);
+    if (route && intent?.action === "navigate") showMainWindow(route);
+    else if (route) mainWindow?.showInactive();
     return {
       response,
-      hide: Boolean(result.hide || route),
+      hide: Boolean(result.hide),
       settings: finalData.settings
     };
   });
@@ -882,8 +947,11 @@ app.whenReady().then(() => {
   createVoiceWindow();
   registerVoiceShortcut();
   buildTray();
+  buildApplicationMenu();
+  shortcutRetryTimer = setInterval(retryPreferredShortcut, 60_000);
   // 手動啟動時自動顯示主視窗；只有「登入自動啟動（openAsHidden）」時才維持背景待命
-  if (!app.getLoginItemSettings().wasOpenedAsHidden) {
+  const isLoginLaunch = app.getLoginItemSettings().openAtLogin && os.uptime() < 120;
+  if (!isLoginLaunch) {
     showMainWindow("today");
   }
   // 在主視窗前面預先取得語音權限（避免日後被浮動語音視窗擋住授權對話框）
@@ -918,6 +986,7 @@ app.on("before-quit", () => {
   clearInterval(reminderTimer);
   clearInterval(calendarSyncTimer);
   clearInterval(trashCleanupTimer);
+  clearInterval(shortcutRetryTimer);
   clearTimeout(calendarSyncDebounce);
   stopNativeVoiceRecognition();
   try {

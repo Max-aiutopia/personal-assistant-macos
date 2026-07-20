@@ -449,8 +449,8 @@ function applyIntent(inputData, intent, now = new Date()) {
     return {
       data,
       response: response || `已把「${event.title}」標記為 ${responseStatusSpeak(status)}。`,
-      hide: intent.hide !== false,
-      route: route || "week"
+      hide: Boolean(intent.hide),
+      route: route || null
     };
   }
 
@@ -483,8 +483,8 @@ function applyIntent(inputData, intent, now = new Date()) {
     return {
       data,
       response: response || `已把「${event.title}」改到 ${event.date}${event.reminderTime ? ` ${event.reminderTime}` : ""}。`,
-      hide: intent.hide !== false,
-      route: route || "week"
+      hide: Boolean(intent.hide),
+      route: route || null
     };
   }
 

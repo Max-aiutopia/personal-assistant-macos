@@ -60,5 +60,10 @@ contextBridge.exposeInMainWorld("assistantAPI", {
     const handler = (_, payload) => callback(payload);
     ipcRenderer.on("voice:native-event", handler);
     return () => ipcRenderer.removeListener("voice:native-event", handler);
+  },
+  onVoiceShortcutChanged: (callback) => {
+    const handler = (_, label) => callback(label);
+    ipcRenderer.on("shortcut-changed", handler);
+    return () => ipcRenderer.removeListener("shortcut-changed", handler);
   }
 });
