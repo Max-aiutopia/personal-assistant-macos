@@ -20,6 +20,7 @@ const {
 crashReporter.start({ uploadToServer: false });
 const logDirectory = path.join(app.getPath("userData"), "logs");
 const logPath = path.join(logDirectory, "main.log");
+try { fs.mkdirSync(logDirectory, { recursive: true }); } catch {}
 function writeDiagnostic(kind, detail) {
   try {
     fs.mkdirSync(logDirectory, { recursive: true });
