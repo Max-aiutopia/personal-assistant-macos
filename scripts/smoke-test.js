@@ -232,6 +232,7 @@ async function main() {
       const healthCards = document.querySelectorAll('#sync-health-grid .sync-health-card').length;
       return {
         statusReady: Boolean(status.authorization),
+        calendarHelperNotTopLevel: !String(status.bundle?.path || '').startsWith('/Applications/貼身小秘書同步.app'),
         settingsReady,
         endTimeVisible,
         eventKind: event?.kind,
@@ -248,6 +249,7 @@ async function main() {
     })()`);
     if (
       !calendarUi.statusReady ||
+      !calendarUi.calendarHelperNotTopLevel ||
       !calendarUi.settingsReady ||
       !calendarUi.endTimeVisible ||
       calendarUi.eventKind !== "event" ||

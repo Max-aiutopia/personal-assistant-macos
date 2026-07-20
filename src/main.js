@@ -1,7 +1,7 @@
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
-const { spawn, spawnSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const {
   app,
   BrowserWindow,
@@ -90,8 +90,6 @@ let voiceShortcut = "Alt+Space";
 let shortcutTestResolver;
 let hasShownBackgroundNotification = false;
 let voiceRecognizerSession;
-let installedVoiceRecognizerApp;
-let installedCalendarBridgeApp;
 
 function getAppIcon() {
   const iconPath = path.join(__dirname, "..", "assets", "app-icon.png");
@@ -222,69 +220,13 @@ function bundledVoiceRecognizerAppPath() {
     : path.join(__dirname, "..", "build", "VoiceRecognizer.app");
 }
 
-function bundleVersion(appPath) {
-  if (!fs.existsSync(appPath)) return "";
-  const result = spawnSync(
-    "/usr/bin/plutil",
-    ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path.join(appPath, "Contents", "Info.plist")],
-    { encoding: "utf8" }
-  );
-  return result.status === 0 ? result.stdout.trim() : "";
-}
-
-function compareVersions(left, right) {
-  const leftParts = left.split(".").map(Number);
-  const rightParts = right.split(".").map(Number);
-  const length = Math.max(leftParts.length, rightParts.length);
-  for (let index = 0; index < length; index += 1) {
-    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
-    if (difference) return difference;
-  }
-  return 0;
-}
-
-function installHelperApp(source, name) {
-  const candidates = [
-    path.join("/Applications", name),
-    path.join(app.getPath("home"), "Applications", name)
-  ];
-  const sourceVersion = bundleVersion(source);
-
-  for (const target of candidates) {
-    try {
-      const targetVersion = bundleVersion(target);
-      if (!fs.existsSync(target) || compareVersions(sourceVersion, targetVersion) > 0) {
-        const temporaryTarget = `${target}.updating`;
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.rmSync(temporaryTarget, { recursive: true, force: true });
-        fs.cpSync(source, temporaryTarget, { recursive: true });
-        fs.rmSync(target, { recursive: true, force: true });
-        fs.renameSync(temporaryTarget, target);
-      }
-      return target;
-    } catch {
-      continue;
-    }
-  }
-  return source;
-}
-
 function voiceRecognizerAppPath() {
-  if (!app.isPackaged) return bundledVoiceRecognizerAppPath();
-  installedVoiceRecognizerApp ||= installHelperApp(
-    bundledVoiceRecognizerAppPath(),
-    "貼身小秘書語音.app"
-  );
-  return installedVoiceRecognizerApp;
+  // Helper 保留在已簽章的主 App 內，避免 Launchpad 出現額外 App 或殘留舊版本。
+  return bundledVoiceRecognizerAppPath();
 }
 
 function voiceRecognizerExecutablePath() {
   return path.join(voiceRecognizerAppPath(), "Contents", "MacOS", "voice-recognizer");
-}
-
-function calendarBridgeTarget() {
-  if (app.isPackaged) return calendarBridgeAppPath();
-  return path.join(calendarBridgeAppPath(), "Contents", "MacOS", "calendar-bridge");
 }
 
 function bundledCalendarBridgeAppPath() {
@@ -294,12 +236,7 @@ function bundledCalendarBridgeAppPath() {
 }
 
 function calendarBridgeAppPath() {
-  if (!app.isPackaged) return bundledCalendarBridgeAppPath();
-  installedCalendarBridgeApp ||= installHelperApp(
-    bundledCalendarBridgeAppPath(),
-    "貼身小秘書同步.app"
-  );
-  return installedCalendarBridgeApp;
+  return bundledCalendarBridgeAppPath();
 }
 
 function calendarBridgeExecutablePath() {
@@ -307,12 +244,14 @@ function calendarBridgeExecutablePath() {
   return path.join(appPath, "Contents", "MacOS", "calendar-bridge");
 }
 
-function ensureCalendarBridgeInstalled() {
+function ensureCalendarBridgeAvailable() {
+  const executable = calendarBridgeExecutablePath();
+  if (!fs.existsSync(executable)) throw new Error(`找不到行事曆元件：${executable}`);
   return calendarBridgeAppPath();
 }
 
 async function requestCalendarAccess() {
-  ensureCalendarBridgeInstalled();
+  ensureCalendarBridgeAvailable();
   return runCalendarBridge(calendarBridgeExecutablePath(), "request-access", null, 180_000);
 }
 
@@ -1043,10 +982,10 @@ app.whenReady().then(() => {
   shortcutRetryTimer = setInterval(retryPreferredShortcut, 60_000);
 
   try {
-    ensureCalendarBridgeInstalled();
+    ensureCalendarBridgeAvailable();
   } catch (error) {
-    writeDiagnostic("calendar-helper-install", error);
-    new Notification({ title: "行事曆元件暫時無法安裝", body: "其他功能仍可使用；詳細資訊已寫入診斷日誌。" }).show();
+    writeDiagnostic("calendar-helper-load", error);
+    new Notification({ title: "行事曆元件暫時無法載入", body: "其他功能仍可使用；詳細資訊已寫入診斷日誌。" }).show();
   }
   session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
     if (permission !== "media") return false;

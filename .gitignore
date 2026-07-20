@@ -1,4 +1,6 @@
 node_modules/
 dist/
+build/VoiceRecognizer.app/
+build/CalendarBridge.app/
 .DS_Store
 *.log
