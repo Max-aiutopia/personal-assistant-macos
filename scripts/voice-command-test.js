@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const { handleVoiceCommand } = require("../src/voiceCommands");
-const { applyIntent } = require("../src/voiceIntent");
+const { applyIntent, resolveBrain } = require("../src/voiceIntent");
 const {
   conversationExcerpt,
   contextFallbackResponse,
@@ -172,6 +172,21 @@ assert.equal(declinedShoot.data.tasks[1].responseStatus, "declined");
 const deletedMeeting = handleVoiceCommand(meetingData, "刪掉行事曆的公司成長會議", now);
 assert.equal(deletedMeeting.data.tasks.some((task) => task.title === "公司成長會議"), false);
 assert.equal(deletedMeeting.data.trash?.length || 0, 0);
+assert.equal(deletedMeeting.data.sync.pendingDeletes.length, 1);
+assert.equal(deletedMeeting.data.sync.pendingDeletes[0].id, "event-1");
+assert.equal(deletedMeeting.data.sync.pendingDeletes[0].calendarId, "google-calendar");
+assert.equal(deletedMeeting.data.sync.deletedExternalItems.length, 1);
+
+const aiDeletedMeeting = applyIntent(meetingData, {
+  action: "delete",
+  title: "公司成長會議",
+  response: "已經刪除完成。"
+}, now);
+assert.equal(aiDeletedMeeting.data.tasks.some((task) => task.title === "公司成長會議"), false);
+assert.equal(aiDeletedMeeting.data.trash?.length || 0, 0);
+assert.equal(aiDeletedMeeting.data.sync.pendingDeletes.length, 1);
+assert.equal(aiDeletedMeeting.data.sync.pendingDeletes[0].id, "event-1");
+assert.equal(aiDeletedMeeting.data.sync.deletedExternalItems.length, 1);
 
 const aiAccepted = applyIntent(meetingData, {
   action: "respond_event",
@@ -221,6 +236,70 @@ const aiTimedReminder = applyIntent(baseData, {
 }, now);
 assert.equal(aiTimedReminder.data.tasks[0].kind, "event");
 assert.equal(aiTimedReminder.data.tasks[0].reminderTime, "15:00");
+
+const missingAddTitle = applyIntent(baseData, {
+  action: "add",
+  title: "",
+  response: "已經幫你新增完成。"
+}, now);
+assert.equal(missingAddTitle.data.tasks.length, 0);
+assert.match(missingAddTitle.response, /內容是什麼/);
+assert.doesNotMatch(missingAddTitle.response, /新增完成/);
+
+const unknownAction = applyIntent(baseData, {
+  action: "drop_database",
+  response: "已經幫你刪除完成。"
+}, now);
+assert.deepEqual(unknownAction.data, baseData);
+assert.match(unknownAction.response, /不確定/);
+assert.doesNotMatch(unknownAction.response, /刪除完成/);
+
+const missingCompleteTarget = applyIntent(baseData, {
+  action: "complete",
+  response: "已標示完成。"
+}, now);
+assert.equal(missingCompleteTarget.data.tasks.length, 0);
+assert.match(missingCompleteTarget.response, /哪一件待辦/);
+assert.doesNotMatch(missingCompleteTarget.response, /已標示完成/);
+
+const safeCompleted = applyIntent(reminder.data, {
+  action: "complete",
+  title: "打電話給客戶",
+  response: "已新增另一件事情。"
+}, now);
+assert.equal(safeCompleted.data.tasks[0].completed, true);
+assert.match(safeCompleted.response, /標示完成/);
+assert.doesNotMatch(safeCompleted.response, /新增另一件/);
+
+const casualMeetingChat = handleVoiceCommand(baseData, "我覺得明天的客戶會議可能會很久", now);
+assert.equal(casualMeetingChat.data.tasks.length, 0);
+assert.match(casualMeetingChat.response, /不確定/);
+
+const fallbackAddConfirmation = handleVoiceCommand(
+  baseData,
+  "幫我安排明天下午兩點拍攝",
+  now,
+  { requireAddConfirmation: true }
+);
+assert.equal(fallbackAddConfirmation.data.tasks.length, 0);
+assert.equal(fallbackAddConfirmation.confirmationRequired, true);
+assert.match(fallbackAddConfirmation.response, /先確認一下/);
+assert.match(fallbackAddConfirmation.response, /確認新增/);
+
+const confirmedFallbackAdd = handleVoiceCommand(
+  baseData,
+  "確認新增明天下午兩點拍攝",
+  now,
+  { requireAddConfirmation: true }
+);
+assert.equal(confirmedFallbackAdd.data.tasks.length, 1);
+assert.equal(confirmedFallbackAdd.data.tasks[0].title, "拍攝");
+assert.equal(confirmedFallbackAdd.data.tasks[0].date, "2026-06-13");
+assert.equal(confirmedFallbackAdd.data.tasks[0].reminderTime, "14:00");
+
+assert.equal(resolveBrain({ voiceBrain: "rules", aiVoiceEnabled: true }), "ollama");
+assert.equal(resolveBrain({ voiceBrain: "claude", aiVoiceEnabled: true }), "claude");
+assert.equal(resolveBrain({ voiceBrain: "rules", aiVoiceEnabled: false }), "rules");
 
 const screenshotNow = new Date(2026, 5, 28, 10, 0);
 const stuckAsrText = "幫我新增七月15七月227月293天晚上七點到九點有高雄家教";

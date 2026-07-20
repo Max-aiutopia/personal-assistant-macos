@@ -6,6 +6,13 @@ const responseElement = document.querySelector("#response");
 const promptElement = document.querySelector("#prompt");
 const statusLabel = document.querySelector("#status-label");
 const orbButton = document.querySelector("#voice-orb");
+const retryButton = document.createElement("button");
+retryButton.id = "retry-button";
+retryButton.className = "retry-button";
+retryButton.type = "button";
+retryButton.textContent = "再試一次";
+retryButton.hidden = true;
+responseElement.parentElement.appendChild(retryButton);
 
 let isListening = false;
 let isProcessing = false;
@@ -19,8 +26,23 @@ const VOICE_HISTORY_LIMIT = 12;
 let settings = {
   voiceReplyEnabled: true,
   voiceAutoListen: true,
-  voiceAutoHide: true
+  voiceAutoHide: true,
+  voiceBrain: "rules",
+  aiVoiceEnabled: false
 };
+
+function resolveConfiguredVoiceBrain(currentSettings = {}) {
+  if (currentSettings.voiceBrain === "claude" || currentSettings.voiceBrain === "ollama") {
+    return currentSettings.voiceBrain;
+  }
+  // 與主程序的 resolveBrain 相同：舊資料即使被補成 rules，舊 AI 旗標仍要先遷移。
+  if (currentSettings.aiVoiceEnabled) return "ollama";
+  return "rules";
+}
+
+function updateSettings(nextSettings = {}) {
+  settings = { ...settings, ...nextSettings };
+}
 
 function resetConversation() {
   conversationId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -39,7 +61,9 @@ function rememberConversationTurn(userText, assistantText) {
 }
 
 function setState(state, prompt) {
+  if (state === "error") clearAutoHide();
   card.dataset.state = state;
+  retryButton.hidden = state !== "error";
   const labels = {
     idle: "準備好了",
     listening: "正在聆聽",
@@ -168,19 +192,24 @@ async function processTranscript(transcript) {
   const generation = sessionGeneration;
   isListening = false;
   transcriptElement.textContent = transcript;
-  const thinkingLabel = (settings.aiVoiceEnabled) ? "小光正在用 AI 思考…" : "我正在處理這句話";
+  const thinkingLabel =
+    resolveConfiguredVoiceBrain(settings) === "rules"
+      ? "我正在處理這句話"
+      : "小光正在用 AI 思考…";
   setState("thinking", thinkingLabel);
 
+  let processTimeoutId;
   try {
-    const processTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("voice-process-timeout")), 45000)
-    );
+    const processTimeout = new Promise((_, reject) => {
+      processTimeoutId = setTimeout(() => reject(new Error("voice-process-timeout")), 45000);
+    });
     const result = await Promise.race([
       api.processVoice(transcript, { conversationId, history: conversationTurns }),
       processTimeout
     ]);
+    clearTimeout(processTimeoutId);
     if (generation !== sessionGeneration) return;
-    settings = { ...settings, ...(result.settings || {}) };
+    updateSettings(result.settings);
     responseElement.textContent = result.response;
     rememberConversationTurn(transcript, result.response);
     speak(result.response, () => {
@@ -194,9 +223,11 @@ async function processTranscript(transcript) {
       }
     });
   } catch (error) {
+    clearTimeout(processTimeoutId);
     isProcessing = false;
-    responseElement.textContent = "剛才沒有處理成功，請再說一次。";
-    setState("error", "處理失敗");
+    const timedOut = error?.message === "voice-process-timeout";
+    responseElement.textContent = timedOut ? "處理逾時，請再說一次。" : "剛才沒有處理成功，請再說一次。";
+    setState("error", timedOut ? "處理逾時" : "處理失敗");
   }
 }
 
@@ -207,7 +238,12 @@ async function startListening() {
   transcriptElement.textContent = "正在啟動麥克風…";
   responseElement.textContent = "第一次使用時，macOS 會詢問語音與麥克風權限。";
   setState("thinking", "正在啟動語音辨識");
-  const started = await api.startVoiceListening();
+  let started = false;
+  try {
+    started = await api.startVoiceListening();
+  } catch {
+    started = false;
+  }
   if (!started) {
     responseElement.textContent = "語音辨識元件無法啟動，請重新安裝貼身小秘書。";
     setState("error", "無法啟動語音");
@@ -220,10 +256,10 @@ async function prepareVoice() {
   isProcessing = false;
   isListening = false;
   stopSpeaking();
-  await api.stopVoiceListening();
+  try { await api.stopVoiceListening(); } catch {}
   resetConversation();
   const data = await api.getData();
-  settings = { ...settings, ...(data.settings || {}) };
+  updateSettings(data.settings);
   document.querySelector("#assistant-name").textContent = data.settings.assistantName || "小光";
   transcriptElement.textContent = "我出現了，請直接告訴我你要做什麼。";
   responseElement.textContent = "你可以新增待辦、記錄日誌，或詢問今天與明天的行程。";
@@ -234,6 +270,18 @@ async function prepareVoice() {
 orbButton.addEventListener("click", () => {
   if (isListening) stopListening();
   else startListening();
+});
+retryButton.addEventListener("click", async () => {
+  clearAutoHide();
+  sessionGeneration += 1;
+  isProcessing = false;
+  isListening = false;
+  stopSpeaking();
+  responseElement.textContent = "正在重新啟動語音辨識…";
+  try {
+    await api.stopVoiceListening();
+  } catch {}
+  await startListening();
 });
 document.querySelector("#close-button").addEventListener("click", hideVoice);
 document.querySelectorAll("[data-example]").forEach((button) => {
@@ -262,7 +310,7 @@ api.onVoiceStop(() => {
 });
 api.onVoicePreview(async () => {
   const data = await api.getData();
-  settings = { ...settings, ...(data.settings || {}) };
+  updateSettings(data.settings);
   const message = "語音回覆功能正常。需要我時，按 Option 加空白鍵呼叫我。";
   transcriptElement.textContent = "測試語音";
   responseElement.textContent = message;
@@ -292,9 +340,18 @@ api.onNativeVoiceEvent((event) => {
     setState("error", "語音辨識需要注意");
   }
 });
-api.onDataChanged((data) => {
-  settings = { ...settings, ...(data.settings || {}) };
-  document.querySelector("#assistant-name").textContent = data.settings.assistantName || "小光";
-});
+if (typeof api.onSettingsChanged === "function") {
+  api.onSettingsChanged((nextSettings) => {
+    updateSettings(nextSettings);
+    document.querySelector("#assistant-name").textContent = nextSettings.assistantName || "小光";
+  });
+}
+// 舊版 preload 的相容路徑；新主程序只送輕量 settings-changed。
+if (typeof api.onDataChanged === "function") {
+  api.onDataChanged((data) => {
+    updateSettings(data.settings);
+    document.querySelector("#assistant-name").textContent = data.settings.assistantName || "小光";
+  });
+}
 
 setState("idle", "需要我時再呼叫");

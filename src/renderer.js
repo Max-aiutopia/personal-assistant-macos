@@ -1,4 +1,7 @@
-const api = window.assistantAPI;
+if (!window.assistantAPI) {
+  console.error("初始化失敗：assistantAPI 未載入。");
+}
+const api = window.assistantAPI || null;
 const { addDateDays, eventOccursOnDate, eventTimeLabel } = window.eventDates || {};
 const dateUtils = (api && api.dateUtils) || {};
 
@@ -16,6 +19,9 @@ let selectedMood = "";
 let quickJournalTimer;
 let undoCountdownTimer;
 let calendarStatus = null;
+let lastPersistedData = null;
+let persistQueue = Promise.resolve();
+let pendingPersistCount = 0;
 const UNDO_WINDOW_MS = 10_000;
 
 // Lightweight render batching for data-changed broadcasts (reduces redundant full re-renders)
@@ -23,14 +29,53 @@ let renderPending = false;
 function scheduleRender() {
   if (renderPending) return;
   renderPending = true;
-  requestAnimationFrame(() => {
+  setTimeout(() => {
     renderPending = false;
     render();
-  });
+  }, 0);
 }
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
+
+function on(target, eventName, handler, options) {
+  const element = typeof target === "string" ? $(target) : target;
+  if (!element) {
+    console.warn(`略過事件掛載：找不到 ${String(target)}`);
+    return false;
+  }
+  try {
+    element.addEventListener(eventName, handler, options);
+    return true;
+  } catch (error) {
+    console.error(`事件掛載失敗：${String(target)} ${eventName}`, error);
+    return false;
+  }
+}
+
+function listenApi(methodName, callback) {
+  if (!api || typeof api[methodName] !== "function") {
+    console.warn(`略過 IPC 監聽：${methodName} 不可用`);
+    return false;
+  }
+  try {
+    api[methodName](callback);
+    return true;
+  } catch (error) {
+    console.error(`IPC 監聽掛載失敗：${methodName}`, error);
+    return false;
+  }
+}
+
+function showRendererError(message, error) {
+  console.error(message, error || "");
+  document.body.dataset.initError = "true";
+  const status = $("#renderer-status");
+  if (status) {
+    status.textContent = message;
+    status.hidden = false;
+  }
+}
 
 function localDateKey(date = new Date()) {
   if (dateUtils.dateKey) return dateUtils.dateKey(date);
@@ -77,8 +122,121 @@ function escapeHtml(value = "") {
 const isReminder = (task) => task.kind !== "event";
 const isEvent = (task) => task.kind === "event";
 
+function cloneData(value) {
+  return structuredClone(value);
+}
+
+function withoutSaveConflict(value) {
+  const clean = cloneData(value || {});
+  delete clean._saveConflict;
+  return clean;
+}
+
+function valuesEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function replayArrayDelta(baseItems = [], intendedItems = [], latestItems = []) {
+  const baseById = new Map(baseItems.filter((item) => item?.id).map((item) => [item.id, item]));
+  const intendedById = new Map(intendedItems.filter((item) => item?.id).map((item) => [item.id, item]));
+  const deletedIds = new Set(
+    [...baseById.keys()].filter((id) => !intendedById.has(id))
+  );
+  const changedById = new Map(
+    [...intendedById.entries()].filter(([id, item]) => !baseById.has(id) || !valuesEqual(item, baseById.get(id)))
+  );
+  const appliedIds = new Set();
+  const merged = latestItems
+    .filter((item) => !item?.id || !deletedIds.has(item.id))
+    .map((item) => {
+      if (!item?.id || !changedById.has(item.id)) return item;
+      appliedIds.add(item.id);
+      return cloneData(changedById.get(item.id));
+    });
+
+  for (const item of intendedItems) {
+    if (item?.id && changedById.has(item.id) && !appliedIds.has(item.id)) {
+      merged.push(cloneData(item));
+    }
+  }
+  return merged;
+}
+
+function replayObjectDelta(baseObject = {}, intendedObject = {}, latestObject = {}) {
+  const merged = { ...latestObject };
+  for (const key of Object.keys(baseObject)) {
+    if (!Object.prototype.hasOwnProperty.call(intendedObject, key)) delete merged[key];
+  }
+  for (const [key, value] of Object.entries(intendedObject)) {
+    if (!Object.prototype.hasOwnProperty.call(baseObject, key) || !valuesEqual(value, baseObject[key])) {
+      merged[key] = cloneData(value);
+    }
+  }
+  return merged;
+}
+
+function replayRendererDelta(base, intended, latest) {
+  const merged = withoutSaveConflict(latest);
+  merged.tasks = replayArrayDelta(base.tasks, intended.tasks, merged.tasks);
+  merged.trash = replayArrayDelta(base.trash, intended.trash, merged.trash);
+  merged.journal = replayObjectDelta(base.journal, intended.journal, merged.journal);
+  merged.settings = replayObjectDelta(base.settings, intended.settings, merged.settings);
+  return merged;
+}
+
+function rememberServerData(nextData) {
+  if (!nextData || typeof nextData !== "object") {
+    throw new Error("主程式回傳了無效資料。");
+  }
+  const clean = withoutSaveConflict(nextData);
+  const nextRevision = Number(clean.revision) || 0;
+  const currentRevision = Number(lastPersistedData?.revision) || 0;
+  if (!lastPersistedData || nextRevision >= currentRevision) {
+    lastPersistedData = cloneData(clean);
+  }
+  return cloneData(lastPersistedData || clean);
+}
+
 async function persist() {
-  data = await api.saveData(data);
+  if (!api || typeof api.saveData !== "function") throw new Error("資料儲存功能不可用。");
+
+  const base = cloneData(lastPersistedData || data);
+  const intended = withoutSaveConflict(data);
+  pendingPersistCount += 1;
+
+  const saveOperation = async () => {
+    const latestKnown = cloneData(lastPersistedData || base);
+    const candidate = Number(latestKnown.revision) === Number(base.revision)
+      ? { ...intended, revision: latestKnown.revision }
+      : replayRendererDelta(base, intended, latestKnown);
+    let saved = await api.saveData(candidate);
+
+    if (saved?._saveConflict) {
+      const latest = withoutSaveConflict(saved);
+      const retry = replayRendererDelta(base, intended, latest);
+      saved = await api.saveData(retry);
+      if (saved?._saveConflict) {
+        throw new Error("資料同時被其他操作更新，請再試一次。");
+      }
+    }
+
+    return rememberServerData(saved);
+  };
+
+  const queuedSave = persistQueue.then(saveOperation, saveOperation);
+  persistQueue = queuedSave.catch(() => undefined);
+  let succeeded = false;
+  try {
+    const saved = await queuedSave;
+    succeeded = true;
+    return saved;
+  } finally {
+    pendingPersistCount = Math.max(0, pendingPersistCount - 1);
+    if (succeeded && pendingPersistCount === 0 && lastPersistedData) {
+      data = cloneData(lastPersistedData);
+      scheduleRender();
+    }
+  }
 }
 
 function deleteTask(task) {
@@ -411,6 +569,7 @@ function renderSettings() {
   $("#brief-time-input").value = data.settings.dailyBriefTime || "09:00";
   $("#notifications-toggle").checked = data.settings.notificationsEnabled !== false;
   $("#launch-toggle").checked = Boolean(data.settings.launchAtLogin);
+  $("#voice-shortcut-input").value = data.settings.voiceShortcut || "Alt+Space";
   $("#voice-auto-listen-toggle").checked = data.settings.voiceAutoListen !== false;
   $("#voice-reply-toggle").checked = data.settings.voiceReplyEnabled !== false;
   $("#voice-auto-hide-toggle").checked = data.settings.voiceAutoHide !== false;
@@ -458,13 +617,21 @@ async function refreshClaudeStatus() {
   try {
     const status = await api.getClaudeStatus();
     if (status.hasKey) {
-      statusEl.textContent = "✅ 已設定（存在本機保護檔，不會再問鑰匙圈密碼）。可按「測試 Claude」確認。";
+      setInlineStatus("#claude-key-status", "✅ 已設定（存在本機保護檔，不會再問鑰匙圈密碼）。可按「測試 Claude」確認。", "success");
     } else {
-      statusEl.textContent = "尚未設定。貼上 sk-ant- 開頭的金鑰後按儲存（存在本機保護檔）。";
+      setInlineStatus("#claude-key-status", "尚未設定。貼上 sk-ant- 開頭的金鑰後按儲存（存在本機保護檔）。");
     }
   } catch {
-    statusEl.textContent = "無法讀取金鑰狀態。";
+    setInlineStatus("#claude-key-status", "無法讀取金鑰狀態。", "error");
   }
+}
+
+function setInlineStatus(selector, message, tone = "") {
+  const status = $(selector);
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle("success", tone === "success");
+  status.classList.toggle("error", tone === "error");
 }
 
 function renderSelectOptions(select, items, selectedValue, emptyLabel) {
@@ -497,12 +664,14 @@ function renderCalendarOptions() {
 
 function readableSyncTime(value) {
   if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "時間格式錯誤";
   return new Intl.DateTimeFormat("zh-TW", {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit"
-  }).format(new Date(value));
+  }).format(date);
 }
 
 function renderCalendarSyncStatus() {
@@ -658,14 +827,25 @@ function renderUndoToast() {
 
 function render() {
   const now = new Date();
-  $("#today-date").textContent = formatDate(now, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    weekday: "long"
-  });
+  try {
+    const todayDate = $("#today-date");
+    if (todayDate) {
+      todayDate.textContent = formatDate(now, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        weekday: "long"
+      });
+    }
+  } catch (error) {
+    console.error("頂部日期渲染失敗：", error);
+  }
   for (const renderSection of [renderToday, renderTasks, renderWeek, renderMonth, renderJournalHistory, renderSettings, renderUndoToast]) {
-    try { renderSection(); } catch (error) { console.error("畫面區塊渲染失敗：", error); }
+    try {
+      renderSection();
+    } catch (error) {
+      console.error(`畫面區塊渲染失敗：${renderSection.name}`, error);
+    }
   }
 }
 
@@ -738,28 +918,26 @@ async function handleTaskAction(event) {
   }
 
   await persist();
-  render();
 }
 
 function wireEvents() {
-  $("#nav").addEventListener("click", (event) => {
+  on("#nav", "click", (event) => {
     const button = event.target.closest("[data-route]");
     if (button) navigate(button.dataset.route);
   });
-  $$("[data-go]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.go)));
-  $("#quick-add-button").addEventListener("click", () => openTaskDialog());
-  $("#close-dialog").addEventListener("click", () => $("#task-dialog").close());
-  $("#cancel-dialog").addEventListener("click", () => $("#task-dialog").close());
-  $("#delete-task-button").addEventListener("click", async () => {
+  $$("[data-go]").forEach((button) => on(button, "click", () => navigate(button.dataset.go)));
+  on("#quick-add-button", "click", () => openTaskDialog());
+  on("#close-dialog", "click", () => $("#task-dialog")?.close());
+  on("#cancel-dialog", "click", () => $("#task-dialog")?.close());
+  on("#delete-task-button", "click", async () => {
     const id = $("#task-id").value;
     const task = data.tasks.find((item) => item.id === id);
     if (!task || !deleteTask(task)) return;
     await persist();
     $("#task-dialog").close();
-    render();
   });
 
-  $("#task-form").addEventListener("submit", async (event) => {
+  on("#task-form", "submit", async (event) => {
     event.preventDefault();
     const id = $("#task-id").value;
     const existing = data.tasks.find((task) => task.id === id);
@@ -791,39 +969,38 @@ function wireEvents() {
     else data.tasks.push(task);
     await persist();
     $("#task-dialog").close();
-    render();
   });
 
-  $("#today-task-list").addEventListener("click", handleTaskAction);
-  $("#today-event-list").addEventListener("click", handleTaskAction);
-  $("#all-task-list").addEventListener("click", handleTaskAction);
-  $("#week-board").addEventListener("click", handleTaskAction);
-  $("#month-grid").addEventListener("click", handleMonthClick);
-  $("#month-prev").addEventListener("click", () => {
+  on("#today-task-list", "click", handleTaskAction);
+  on("#today-event-list", "click", handleTaskAction);
+  on("#all-task-list", "click", handleTaskAction);
+  on("#week-board", "click", handleTaskAction);
+  on("#month-grid", "click", handleMonthClick);
+  on("#month-prev", "click", () => {
     monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1);
     renderMonth();
   });
-  $("#month-next").addEventListener("click", () => {
+  on("#month-next", "click", () => {
     monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1);
     renderMonth();
   });
-  $("#month-today").addEventListener("click", () => {
+  on("#month-today", "click", () => {
     monthCursor = new Date();
     renderMonth();
   });
-  $("#task-kind").addEventListener("change", syncTaskKindFields);
+  on("#task-kind", "change", syncTaskKindFields);
   ["#task-date", "#task-time", "#task-end-time"].forEach((selector) => {
-    $(selector).addEventListener("input", updateEndDateHint);
+    on(selector, "input", updateEndDateHint);
   });
 
-  $("#task-filter").addEventListener("click", (event) => {
+  on("#task-filter", "click", (event) => {
     const button = event.target.closest("[data-filter]");
     if (!button) return;
     taskFilter = button.dataset.filter;
     $$("#task-filter button").forEach((item) => item.classList.toggle("active", item === button));
     renderTasks();
   });
-  $("#overdue-organizer").addEventListener("click", async (event) => {
+  on("#overdue-organizer", "click", async (event) => {
     const button = event.target.closest("[data-overdue-action]");
     if (!button) return;
     const today = localDateKey();
@@ -840,19 +1017,17 @@ function wireEvents() {
       task.updatedAt = now;
     }
     await persist();
-    render();
   });
-  $("#undo-delete-button").addEventListener("click", async () => {
+  on("#undo-delete-button", "click", async () => {
     const trashId = $("#undo-toast").dataset.trashId;
     const entry = (data.trash || []).find((item) => item.id === trashId);
     if (!entry) return;
     data.tasks.push(entry.task);
     data.trash = data.trash.filter((item) => item.id !== trashId);
     await persist();
-    render();
   });
 
-  $("#today-quick-journal").addEventListener("input", () => {
+  on("#today-quick-journal", "input", () => {
     $("#journal-save-status").textContent = "正在保存…";
     clearTimeout(quickJournalTimer);
     quickJournalTimer = setTimeout(async () => {
@@ -864,12 +1039,11 @@ function wireEvents() {
       };
       await persist();
       $("#journal-save-status").textContent = "已自動保存";
-      renderJournalHistory();
     }, 500);
   });
 
-  $("#journal-date").addEventListener("change", (event) => loadJournalEditor(event.target.value));
-  $("#mood-picker").addEventListener("click", (event) => {
+  on("#journal-date", "change", (event) => loadJournalEditor(event.target.value));
+  on("#mood-picker", "click", (event) => {
     const button = event.target.closest("[data-mood]");
     if (!button) return;
     selectedMood = button.dataset.mood;
@@ -877,11 +1051,11 @@ function wireEvents() {
     $("#full-journal-status").textContent = "尚未保存";
   });
   $$(".journal-editor textarea").forEach((input) =>
-    input.addEventListener("input", () => {
+    on(input, "input", () => {
       $("#full-journal-status").textContent = "尚未保存";
     })
   );
-  $("#save-journal-button").addEventListener("click", async () => {
+  on("#save-journal-button", "click", async () => {
     const date = $("#journal-date").value;
     data.journal[date] = {
       done: $("#journal-done").value.trim(),
@@ -893,14 +1067,13 @@ function wireEvents() {
     await persist();
     $("#full-journal-status").textContent = "已保存";
     if (date === localDateKey()) $("#today-quick-journal").value = data.journal[date].done;
-    renderJournalHistory();
   });
-  $("#journal-history").addEventListener("click", (event) => {
+  on("#journal-history", "click", (event) => {
     const item = event.target.closest("[data-journal-date]");
     if (item) loadJournalEditor(item.dataset.journalDate);
   });
 
-  $("#save-settings-button").addEventListener("click", async () => {
+  on("#save-settings-button", "click", async () => {
     data.settings = {
       ...data.settings,
       userName: $("#user-name-input").value.trim(),
@@ -924,29 +1097,80 @@ function wireEvents() {
     };
     await api.setLaunchAtLogin(data.settings.launchAtLogin);
     await persist();
-    render();
-    navigate(activeRoute);
     $("#save-settings-button").textContent = "已儲存";
     setTimeout(() => ($("#save-settings-button").textContent = "儲存設定"), 1200);
   });
-  $("#test-voice-button").addEventListener("click", () => api.testVoice());
-  $("#test-notification-button").addEventListener("click", () => api.testNotification());
-  $("#test-ai-button").addEventListener("click", async () => {
+  on("#save-voice-shortcut-button", "click", async () => {
+    const input = $("#voice-shortcut-input");
+    const button = $("#save-voice-shortcut-button");
+    const requested = input.value.trim();
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "套用中…";
+    setInlineStatus("#voice-shortcut-status", "正在重新註冊快捷鍵…");
+    try {
+      if (!api.setVoiceShortcut) throw new Error("目前版本不支援自訂快捷鍵。");
+      const result = await api.setVoiceShortcut(requested);
+      if (!result?.registered) throw new Error(result?.error || "快捷鍵註冊失敗。");
+      data.settings.voiceShortcut = requested;
+      input.value = requested;
+      const registrationMessage = result.accelerator && result.accelerator !== requested
+        ? `${requested} 無法使用，已改用 ${result.label || result.accelerator}`
+        : `已註冊 ${result.label || result.accelerator || requested}`;
+      setInlineStatus("#voice-shortcut-status", `${registrationMessage}。請再按「測試快捷鍵」確認沒有被其他 App 攔截。`, "success");
+      button.textContent = "已套用 ✓";
+    } catch (error) {
+      setInlineStatus("#voice-shortcut-status", error.message || "快捷鍵註冊失敗。", "error");
+      button.textContent = original;
+    } finally {
+      button.disabled = false;
+      setTimeout(() => (button.textContent = original), 1500);
+    }
+  });
+  on("#test-voice-shortcut-button", "click", async () => {
+    const button = $("#test-voice-shortcut-button");
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "10 秒內按快捷鍵…";
+    setInlineStatus("#voice-shortcut-status", "請現在按一次你設定的快捷鍵。");
+    try {
+      if (!api.beginVoiceShortcutTest) throw new Error("目前版本不支援快捷鍵測試。");
+      const result = await api.beginVoiceShortcutTest();
+      setInlineStatus(
+        "#voice-shortcut-status",
+        result?.message || (result?.triggered ? "快捷鍵測試成功。" : "沒有收到快捷鍵；可能被其他 App 攔截。"),
+        result?.triggered ? "success" : "error"
+      );
+    } catch (error) {
+      setInlineStatus("#voice-shortcut-status", error.message || "快捷鍵測試失敗。", "error");
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  });
+  on("#test-voice-button", "click", () => api.testVoice());
+  on("#test-notification-button", "click", () => api.testNotification());
+  on("#test-ai-button", "click", async () => {
     const btn = $("#test-ai-button");
     const original = btn.textContent;
     btn.disabled = true;
     btn.textContent = "測試中…";
+    setInlineStatus("#ollama-test-status", "正在連線 Ollama…");
     try {
       const res = await api.testAIConnection();
-      alert(res?.success ? `✅ 連線成功！模型：${res.model || "未知"}` : `❌ 失敗：${res?.error || "無法連線 Ollama"}`);
+      setInlineStatus(
+        "#ollama-test-status",
+        res?.success ? `連線成功，模型：${res.model || "未知"}` : `連線失敗：${res?.error || "無法連線 Ollama"}`,
+        res?.success ? "success" : "error"
+      );
     } catch (e) {
-      alert("❌ 測試失敗：" + e.message);
+      setInlineStatus("#ollama-test-status", `測試失敗：${e.message}`, "error");
     } finally {
       btn.disabled = false;
       btn.textContent = original;
     }
   });
-  $("#save-claude-key-button").addEventListener("click", async () => {
+  on("#save-claude-key-button", "click", async () => {
     const input = $("#claude-key-input");
     const key = input.value.trim();
     const btn = $("#save-claude-key-button");
@@ -963,38 +1187,42 @@ function wireEvents() {
           $("#voice-brain-select").value = "claude";
           data.settings = { ...data.settings, voiceBrain: "claude" };
           await persist();
-          renderSettings();
         }
         btn.textContent = "已儲存 ✓";
       } else {
         btn.textContent = "已清除";
       }
     } catch (e) {
-      alert("儲存金鑰失敗：" + e.message);
+      setInlineStatus("#claude-key-status", `儲存金鑰失敗：${e.message}`, "error");
       btn.textContent = original;
     } finally {
       btn.disabled = false;
       setTimeout(() => (btn.textContent = original), 1500);
     }
   });
-  $("#test-claude-button").addEventListener("click", async () => {
+  on("#test-claude-button", "click", async () => {
     const btn = $("#test-claude-button");
     const original = btn.textContent;
     btn.disabled = true;
     btn.textContent = "測試中…";
+    setInlineStatus("#claude-test-status", "正在連線 Claude…");
     try {
       const res = await api.testClaude();
-      alert(res?.success ? `✅ Claude 連線成功！模型：${res.model || "未知"}` : `❌ 失敗：${res?.error || "無法連線"}`);
+      setInlineStatus(
+        "#claude-test-status",
+        res?.success ? `Claude 連線成功，模型：${res.model || "未知"}` : `Claude 連線失敗：${res?.error || "無法連線"}`,
+        res?.success ? "success" : "error"
+      );
     } catch (e) {
-      alert("❌ 測試失敗：" + e.message);
+      setInlineStatus("#claude-test-status", `Claude 測試失敗：${e.message}`, "error");
     } finally {
       btn.disabled = false;
       btn.textContent = original;
     }
   });
-  $("#show-data-button").addEventListener("click", () => api.showDataFile());
-  $("#open-accounts-button").addEventListener("click", () => api.openInternetAccounts());
-  $("#connect-calendar-button").addEventListener("click", async () => {
+  on("#show-data-button", "click", () => api.showDataFile());
+  on("#open-accounts-button", "click", () => api.openInternetAccounts());
+  on("#connect-calendar-button", "click", async () => {
     const button = $("#connect-calendar-button");
     button.disabled = true;
     button.textContent = "等待系統授權…";
@@ -1013,7 +1241,6 @@ function wireEvents() {
         }
       }
       await persist();
-      renderSettings();
     } catch (error) {
       data.sync = { ...(data.sync || {}), lastSyncError: error.message };
       renderCalendarSyncStatus();
@@ -1022,7 +1249,7 @@ function wireEvents() {
       button.textContent = "連接行事曆";
     }
   });
-  $("#sync-calendar-button").addEventListener("click", async () => {
+  on("#sync-calendar-button", "click", async () => {
     const button = $("#sync-calendar-button");
     data.settings = {
       ...data.settings,
@@ -1035,40 +1262,76 @@ function wireEvents() {
     button.disabled = true;
     button.textContent = "同步中…";
     try {
-      data = await api.syncCalendars();
+      data = rememberServerData(await api.syncCalendars());
       calendarStatus = await api.getCalendarStatus();
     } catch (error) {
       data.sync = { ...(data.sync || {}), lastSyncError: error.message };
     } finally {
       button.disabled = false;
       button.textContent = "立即同步";
-      render();
+      try {
+        renderCalendarOptions();
+        renderCalendarSyncStatus();
+        renderSyncHealth();
+      } catch (error) {
+        console.error("行事曆同步狀態渲染失敗：", error);
+      }
     }
   });
 }
 
 async function init() {
-  if (!api) throw new Error("assistantAPI 未載入");
-  data = await api.getData();
-  refreshCalendarStatus(); // 背景重試取得行事曆狀態，徽章就緒後自動更新
-  $("#journal-date").value = localDateKey();
-  loadJournalEditor(localDateKey());
-  wireEvents();
-  render();
-  navigate("today");
-  refreshClaudeStatus();
-  api.onDataChanged((nextData) => {
-    data = nextData;
-    scheduleRender();
+  if (!api) {
+    showRendererError("主程式連線未載入，請重新啟動貼身小秘書。");
+    return;
+  }
+
+  try {
+    data = rememberServerData(await api.getData());
+  } catch (error) {
+    showRendererError("資料載入失敗，請重新啟動後再試。", error);
+    return;
+  }
+
+  try {
+    wireEvents();
+  } catch (error) {
+    showRendererError("部分操作無法啟用，其他功能仍可繼續使用。", error);
+  }
+
+  const today = localDateKey();
+  try {
+    const journalDate = $("#journal-date");
+    if (journalDate) journalDate.value = today;
+    loadJournalEditor(today);
+  } catch (error) {
+    console.error("日誌編輯器初始化失敗：", error);
+  }
+
+  listenApi("onDataChanged", (nextData) => {
+    rememberServerData(nextData);
+    if (pendingPersistCount === 0 && lastPersistedData) {
+      data = cloneData(lastPersistedData);
+      scheduleRender();
+    }
   });
-  api.onNavigate((route) => navigate(route));
-  api.onCalendarStatusChanged((status) => {
+  listenApi("onNavigate", (route) => {
+    try { navigate(route); } catch (error) { console.error("切換頁面失敗：", error); }
+  });
+  listenApi("onCalendarStatusChanged", (status) => {
     calendarStatus = status;
-    renderSettings();
+    try { renderSettings(); } catch (error) { console.error("行事曆狀態渲染失敗：", error); }
   });
+
+  try {
+    navigate("today");
+  } catch (error) {
+    showRendererError("主畫面渲染失敗，部分功能仍可繼續使用。", error);
+  }
+  void refreshCalendarStatus(); // 背景重試取得行事曆狀態，徽章就緒後自動更新
+  void refreshClaudeStatus();
 }
 
 init().catch((error) => {
-  console.error("初始化失敗：", error);
-  document.body.dataset.initError = "true";
+  showRendererError("初始化失敗，請重新啟動貼身小秘書。", error);
 });

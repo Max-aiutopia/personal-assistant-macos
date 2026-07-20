@@ -95,6 +95,11 @@ button {
   box-shadow: 0 0 0 5px rgba(98, 181, 138, 0.13);
 }
 
+.voice-card[data-state="error"] .status-dot {
+  background: #d85e6d;
+  box-shadow: 0 0 0 5px rgba(216, 94, 109, 0.13);
+}
+
 @keyframes status-pulse {
   50% {
     box-shadow: 0 0 0 9px rgba(122, 91, 210, 0.06);
@@ -272,7 +277,30 @@ button {
 }
 
 .assistant-speech {
+  position: relative;
   background: var(--lavender-soft);
+}
+
+.voice-card[data-state="error"] .assistant-speech {
+  padding-right: 96px;
+}
+
+.retry-button {
+  position: absolute;
+  right: 10px;
+  bottom: 9px;
+  padding: 6px 10px;
+  border: 1px solid rgba(216, 94, 109, 0.24);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #a43f4e;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.retry-button:hover {
+  background: #fff;
 }
 
 .speech-label {

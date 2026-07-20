@@ -59,6 +59,12 @@ function externalKey(external) {
   return `${external.type}:${external.id}`;
 }
 
+function stableExternalItemKey(item) {
+  const external = item?.external || item;
+  if (!external?.id || !external?.type) return "";
+  return [external.type, external.calendarId || "", external.id].join(":");
+}
+
 function recurringEventBaseId(external) {
   if (external?.type !== "event" || !external.id) return "";
   return external.id.replace(/\/RID=\d+$/, "");
@@ -157,7 +163,7 @@ function dedupeSyncedTasks(tasks) {
 function importedTaskId(item) {
   const hash = crypto
     .createHash("sha1")
-    .update(syncedItemKey(item))
+    .update(stableExternalItemKey(item))
     .digest("hex")
     .slice(0, 14);
   return `eventkit-${hash}`;
@@ -180,9 +186,9 @@ function enqueueDeletedTasks(previous, next) {
   const nextIds = new Set((next.tasks || []).map((task) => task.id));
   const trashedIds = new Set((next.trash || []).map((entry) => entry.task?.id).filter(Boolean));
   const pending = [...(next.sync?.pendingDeletes || [])];
-  const known = new Set(pending.map(syncedItemKey));
+  const known = new Set(pending.map(stableExternalItemKey));
   const deletedExternalItems = [...(next.sync?.deletedExternalItems || [])];
-  const knownDeleted = new Set(deletedExternalItems.map(syncedItemKey));
+  const knownDeleted = new Set(deletedExternalItems.map(stableExternalItemKey));
   const deletedAt = new Date().toISOString();
 
   for (const task of previous.tasks || []) {
@@ -193,7 +199,7 @@ function enqueueDeletedTasks(previous, next) {
     ) {
       continue;
     }
-    const key = syncedTaskKey(task);
+    const key = stableExternalItemKey(task);
     if (!key) continue;
     const deletion = deletionRecord(task, deletedAt);
     if (!known.has(key)) {
@@ -222,8 +228,8 @@ function finalizeExpiredTrash(inputData, now = new Date()) {
   data.sync = data.sync || {};
   const pending = [...(data.sync.pendingDeletes || [])];
   const deletedExternalItems = [...(data.sync.deletedExternalItems || [])];
-  const knownPending = new Set(pending.map(syncedItemKey));
-  const knownDeleted = new Set(deletedExternalItems.map(syncedItemKey));
+  const knownPending = new Set(pending.map(stableExternalItemKey));
+  const knownDeleted = new Set(deletedExternalItems.map(stableExternalItemKey));
   const remaining = [];
 
   for (const entry of data.trash) {
@@ -234,7 +240,7 @@ function finalizeExpiredTrash(inputData, now = new Date()) {
     const task = entry.task;
     if (task?.external?.provider !== "eventkit") continue;
     const deletion = deletionRecord(task, entry.deletedAt || now.toISOString());
-    const key = syncedItemKey(deletion);
+    const key = stableExternalItemKey(deletion);
     if (!knownPending.has(key)) {
       pending.push(deletion);
       knownPending.add(key);
@@ -261,9 +267,9 @@ function mergeSyncResult(inputData, result, now = new Date()) {
     return !deletedAt || deletedAt >= tombstoneCutoff;
   });
   const deletedKeys = new Set([
-    ...data.sync.deletedExternalItems.map(syncedItemKey),
-    ...(data.sync.pendingDeletes || []).map(syncedItemKey),
-    ...(data.trash || []).map((entry) => syncedTaskKey(entry.task || {}))
+    ...data.sync.deletedExternalItems.map(stableExternalItemKey),
+    ...(data.sync.pendingDeletes || []).map(stableExternalItemKey),
+    ...(data.trash || []).map((entry) => stableExternalItemKey(entry.task || {}))
   ]);
 
   const byLocalId = new Map(data.tasks.map((task) => [task.id, task]));
@@ -273,28 +279,50 @@ function mergeSyncResult(inputData, result, now = new Date()) {
   }
 
   const byExternal = new Map();
+  const byStableExternal = new Map();
   for (const task of data.tasks) {
     const key = syncedTaskKey(task);
     if (key) byExternal.set(key, task);
+    const stableKey = stableExternalItemKey(task);
+    if (stableKey) byStableExternal.set(stableKey, [...(byStableExternal.get(stableKey) || []), task]);
   }
+
+  const remoteStableCounts = new Map();
+  for (const item of result.externalItems || []) {
+    const stableKey = stableExternalItemKey(item);
+    remoteStableCounts.set(stableKey, (remoteStableCounts.get(stableKey) || 0) + 1);
+  }
+  const usedIds = new Set(data.tasks.map((task) => task.id));
 
   for (const item of result.externalItems || []) {
     const key = syncedItemKey(item);
-    if (!key || deletedKeys.has(key)) continue;
+    const stableKey = stableExternalItemKey(item);
+    if (!key || deletedKeys.has(stableKey)) continue;
     let task = byExternal.get(key);
+    if (!task && remoteStableCounts.get(stableKey) === 1) {
+      const candidates = byStableExternal.get(stableKey) || [];
+      if (candidates.length === 1) task = candidates[0];
+    }
     if (!task) {
+      const baseId = importedTaskId(item);
+      let id = baseId;
+      if (usedIds.has(id)) {
+        const occurrenceSuffix = crypto.createHash("sha1").update(key).digest("hex").slice(0, 8);
+        id = `${baseId}-${occurrenceSuffix}`;
+      }
       task = {
-        id: importedTaskId(item),
+        id,
         category: item.kind === "event" ? "工作" : "其他",
         createdAt: item.updatedAt || now.toISOString()
       };
       data.tasks.push(task);
+      usedIds.add(id);
       byExternal.set(key, task);
     }
 
     const localModified = Date.parse(task.updatedAt || task.createdAt || 0);
     const remoteModified = Date.parse(item.updatedAt || 0);
-    if (localModified && remoteModified && localModified > remoteModified + 1_000) {
+    if (localModified && remoteModified && localModified > remoteModified + 2_000) {
       task.external = item.external;
       if (!task.responseStatus && item.responseStatus) task.responseStatus = item.responseStatus;
       continue;
@@ -327,13 +355,13 @@ function mergeSyncResult(inputData, result, now = new Date()) {
     ) return false;
     if (!isSyncedExternalTaskInScope(task, data, result, window)) return true;
     const key = syncedTaskKey(task);
-    if (!key || deletedKeys.has(key)) return true;
+    if (!key || deletedKeys.has(stableExternalItemKey(task))) return true;
     return presentExternalKeys.has(key);
   });
 
-  const removed = new Set((result.removedDeletes || []).map(syncedItemKey));
+  const removed = new Set((result.removedDeletes || []).map(stableExternalItemKey));
   data.sync.pendingDeletes = (data.sync.pendingDeletes || []).filter(
-    (item) => !removed.has(syncedItemKey(item))
+    (item) => !removed.has(stableExternalItemKey(item))
   );
   const removedEventActions = new Set((result.removedEventActions || []).map(eventActionKey));
   data.sync.pendingEventActions = (data.sync.pendingEventActions || []).filter(
@@ -352,6 +380,7 @@ module.exports = {
   dedupeSyncedTasks,
   enqueueDeletedTasks,
   externalKey,
+  stableExternalItemKey,
   finalizeExpiredTrash,
   mergeSyncResult,
   runCalendarBridge,

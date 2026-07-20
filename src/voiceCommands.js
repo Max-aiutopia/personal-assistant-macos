@@ -377,6 +377,7 @@ function cleanTaskTitle(text, dateMatch, timeMatch) {
   return text
     .replace(/^(小光|小幫手|助理)[，,\s]*/i, "")
     .replace(/^(請|麻煩)?\s*(幫我)?\s*/i, "")
+    .replace(/^(確認|確定)\s*/i, "")
     .replace(/^(新增|加入|建立|加上|加到|加進|放到|排進|記錄一下|記錄|記下|記得|提醒我|安排)\s*/i, "")
     .replace(/^(一個|一項)?\s*(待辦事項|待辦|提醒|事項|行程|會議|約會|行事曆)?\s*/i, "")
     .replace(/^(到|進)?\s*(行事曆|日曆)\s*(裡|中)?\s*/i, "")
@@ -387,6 +388,25 @@ function cleanTaskTitle(text, dateMatch, timeMatch) {
     .replace(/的(?=家教|會議|拍攝|課|課程)/g, "")
     .replace(/[，,。.!！?？]+$/g, "")
     .trim();
+}
+
+function hasAddCommandPrefix(text) {
+  return /^(?:(?:小光|小幫手|助理)[，,\s]*)?(?:(?:請|麻煩)\s*)?(?:幫我\s*)?(?:(?:確認|確定)\s*)?(?:提醒我|新增|加入|建立|加上|加到|加進|放到|排進|記錄一下|記錄|記下|記得|安排)/i.test(
+    String(text || "").trim()
+  );
+}
+
+function isConfirmedAddCommand(text) {
+  return /^(?:(?:小光|小幫手|助理)[，,\s]*)?(?:(?:請|麻煩)\s*)?(?:幫我\s*)?(?:確認|確定)\s*(?:提醒我|新增|加入|建立|加上|加到|加進|放到|排進|記錄一下|記錄|記下|記得|安排)/i.test(
+    String(text || "").trim()
+  );
+}
+
+function addConfirmationResponse({ title, kind, dates, time, endTime }) {
+  const noun = kind === "event" ? "行程" : "待辦";
+  const dateLabel = (dates || []).map(shortDateLabel).join("、");
+  const timeLabel = time ? `，時間 ${time}${endTime ? ` 到 ${endTime}` : ""}` : "";
+  return `我先確認一下：你是要新增${noun}「${title}」，日期 ${dateLabel}${timeLabel}嗎？如果正確，請用「確認新增」開頭，重新說一次完整內容。`;
 }
 
 function findTask(data, spokenTitle) {
@@ -472,6 +492,42 @@ function queueEventAction(data, task, actionFields, now = new Date()) {
     (item) => pendingEventActionKey(item) !== key
   );
   data.sync.pendingEventActions.push(action);
+}
+
+function externalDeletionIdentity(item) {
+  const external = item?.external || item || {};
+  if (!external.id || !external.type) return "";
+  return `${external.type}:${external.calendarId || ""}:${external.id}`;
+}
+
+function enqueueExternalDelete(data, task, now = new Date()) {
+  const external = task?.external || {};
+  if (external.provider !== "eventkit" || !external.id || !external.type) return false;
+  data.sync = data.sync || {};
+  data.sync.pendingDeletes = Array.isArray(data.sync.pendingDeletes)
+    ? data.sync.pendingDeletes
+    : [];
+  data.sync.deletedExternalItems = Array.isArray(data.sync.deletedExternalItems)
+    ? data.sync.deletedExternalItems
+    : [];
+  const deletion = {
+    id: external.id,
+    type: external.type,
+    calendarId: external.calendarId || "",
+    title: task.title || "",
+    date: task.date || "",
+    reminderTime: task.reminderTime || "",
+    endTime: task.endTime || "",
+    deletedAt: now.toISOString()
+  };
+  const identity = externalDeletionIdentity(deletion);
+  if (!data.sync.pendingDeletes.some((item) => externalDeletionIdentity(item) === identity)) {
+    data.sync.pendingDeletes.push(deletion);
+  }
+  if (!data.sync.deletedExternalItems.some((item) => externalDeletionIdentity(item) === identity)) {
+    data.sync.deletedExternalItems.push(deletion);
+  }
+  return true;
 }
 
 function setEventResponse(data, task, rawStatus, now = new Date()) {
@@ -625,7 +681,7 @@ function cleanRescheduleTitle(text, dateMatch, timeMatch) {
     .trim();
 }
 
-function handleVoiceCommand(inputData, rawText, now = new Date()) {
+function handleVoiceCommand(inputData, rawText, now = new Date(), options = {}) {
   const data = structuredClone(inputData);
   const text = String(rawText || "").trim();
   const today = dateKey(now);
@@ -728,9 +784,10 @@ function handleVoiceCommand(inputData, rawText, now = new Date()) {
         response: `我找不到「${deleteMatch[1]}」這個${wantsEvent ? "行程" : "待辦"}。`
       };
     }
-    data.tasks = data.tasks.filter((item) => item.id !== task.id);
     const deleteImmediately = task.kind === "event" && task.external?.provider === "eventkit";
-    if (!deleteImmediately) {
+    if (deleteImmediately) {
+      enqueueExternalDelete(data, task, now);
+    } else {
       data.trash = [
         ...(data.trash || []),
         {
@@ -741,6 +798,7 @@ function handleVoiceCommand(inputData, rawText, now = new Date()) {
         }
       ];
     }
+    data.tasks = data.tasks.filter((item) => item.id !== task.id);
     return {
       data,
       response: deleteImmediately
@@ -834,7 +892,7 @@ function handleVoiceCommand(inputData, rawText, now = new Date()) {
     return { data, response: `已經把「${content}」記在今天的日誌。` };
   }
 
-  if (/(提醒我|新增|加入|建立|加到|加進|放到|排進|待辦|記得|記錄|幫我記下|安排|行程|會議|約會|拍攝|家教|行事曆|日曆)/.test(text)) {
+  if (hasAddCommandPrefix(text)) {
     const parsedDates = parseExplicitDates(text, now);
     const parsedDate = parsedDates.dates.length
       ? { value: parsedDates.dates[0].value, matched: parsedDates.matched }
@@ -855,6 +913,19 @@ function handleVoiceCommand(inputData, rawText, now = new Date()) {
         ? "event"
         : "reminder";
     const endTime = kind === "event" ? parsedTimeRange.end : "";
+    if (options.requireAddConfirmation && !isConfirmedAddCommand(text)) {
+      return {
+        data,
+        response: addConfirmationResponse({
+          title,
+          kind,
+          dates: dateValues,
+          time: parsedTime.value,
+          endTime
+        }),
+        confirmationRequired: true
+      };
+    }
     const addedDates = [];
     const skippedDates = [];
 
@@ -932,6 +1003,10 @@ module.exports = {
   responseStatusSpeak,
   setEventResponse,
   rescheduleEvent,
+  enqueueExternalDelete,
+  externalDeletionIdentity,
   hasSameScheduledItem,
-  addResponse
+  addResponse,
+  hasAddCommandPrefix,
+  isConfirmedAddCommand
 };

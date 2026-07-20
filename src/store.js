@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const DEFAULT_DATA = {
+  revision: 0,
   tasks: [],
   trash: [],
   journal: {},
@@ -14,6 +15,7 @@ const DEFAULT_DATA = {
     voiceReplyEnabled: true,
     voiceAutoListen: true,
     voiceAutoHide: true,
+    voiceShortcut: "Alt+Space",
     calendarSyncEnabled: false,
     reminderSyncEnabled: false,
     calendarId: "",
@@ -38,7 +40,7 @@ const DEFAULT_DATA = {
   }
 };
 
-function createStore(userDataPath) {
+function createStore(userDataPath, { onRecovery } = {}) {
   const dataPath = path.join(userDataPath, "assistant-data.json");
   let cached = null;
   let writeTimer = null;
@@ -48,6 +50,7 @@ function createStore(userDataPath) {
     return {
       ...DEFAULT_DATA,
       ...parsed,
+      revision: Number.isInteger(parsed.revision) && parsed.revision >= 0 ? parsed.revision : 0,
       settings: { ...DEFAULT_DATA.settings, ...(parsed.settings || {}) },
       tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
       trash: Array.isArray(parsed.trash) ? parsed.trash : [],
@@ -113,8 +116,10 @@ function createStore(userDataPath) {
         try {
           const backup = JSON.parse(fs.readFileSync(`${dataPath}.bak`, "utf8"));
           cached = normalize(backup);
+          try { onRecovery?.({ restored: true, corruptPath: `${dataPath}.corrupt-*` }); } catch {}
           return structuredClone(cached);
         } catch {}
+        try { onRecovery?.({ restored: false, corruptPath: `${dataPath}.corrupt-*` }); } catch {}
       }
       cached = structuredClone(DEFAULT_DATA);
       return structuredClone(cached);
@@ -123,10 +128,11 @@ function createStore(userDataPath) {
 
   function write(data) {
     // Update in-memory immediately (fast path for UI + voice commands)
-    cached = normalize(data);
+    const previousRevision = Number.isInteger(cached?.revision) ? cached.revision : Number(data?.revision) || 0;
+    cached = { ...normalize(data), revision: previousRevision + 1 };
     // Debounce actual disk write (many quick saves during journal typing or rapid voice commands will coalesce)
     scheduleWrite(cached);
-    return data;
+    return structuredClone(cached);
   }
 
   function update(updater) {

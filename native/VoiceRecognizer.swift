@@ -15,6 +15,7 @@ final class VoiceRecognizer {
     private var latestText = ""
     private var hasFinished = false
     private var outputHandle: FileHandle?
+    private var configurationObserver: NSObjectProtocol?
     private let preferOnDevice: Bool
 
     // 領域詞彙偏置：提升助理名稱、指令動詞、時間用語等專有名詞的辨識命中率
@@ -118,6 +119,15 @@ final class VoiceRecognizer {
             return
         }
 
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: audioEngine,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, !self.hasFinished else { return }
+            self.finishWithLatestText()
+        }
+
         emit(type: "ready")
         resetOpeningTimer()
         let maximumWorkItem = DispatchWorkItem { [weak self] in
@@ -197,6 +207,10 @@ final class VoiceRecognizer {
         hasFinished = true
         silenceWorkItem?.cancel()
         maximumWorkItem?.cancel()
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+        }
         if audioEngine.isRunning {
             audioEngine.stop()
             audioEngine.inputNode.removeTap(onBus: 0)

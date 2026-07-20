@@ -20,6 +20,7 @@ const {
 crashReporter.start({ uploadToServer: false });
 const logDirectory = path.join(app.getPath("userData"), "logs");
 const logPath = path.join(logDirectory, "main.log");
+const voiceHelperLogPath = path.join(logDirectory, "voice-helper.log");
 try { fs.mkdirSync(logDirectory, { recursive: true }); } catch {}
 function writeDiagnostic(kind, detail) {
   try {
@@ -31,16 +32,29 @@ function writeDiagnostic(kind, detail) {
     fs.appendFileSync(logPath, `${new Date().toISOString()} [${kind}] ${rendered}\n`);
   } catch {}
 }
-process.on("uncaughtException", (error) => writeDiagnostic("uncaughtException", error));
+function writeVoiceHelperLog(detail) {
+  try {
+    if (fs.existsSync(voiceHelperLogPath) && fs.statSync(voiceHelperLogPath).size > 1024 * 1024) {
+      fs.renameSync(voiceHelperLogPath, `${voiceHelperLogPath}.1`);
+    }
+    fs.appendFileSync(voiceHelperLogPath, `${new Date().toISOString()} ${String(detail)}\n`);
+  } catch {}
+}
+let handlingUncaughtException = false;
+process.on("uncaughtException", (error) => {
+  writeDiagnostic("uncaughtException", error);
+  if (handlingUncaughtException) return;
+  handlingUncaughtException = true;
+  try {
+    new Notification({ title: "貼身小秘書發生錯誤", body: "現場紀錄已保存，正在安全重新啟動。" }).show();
+  } catch {}
+  if (!process.argv.includes("--recovery-relaunch")) {
+    try { app.relaunch({ args: [...process.argv.slice(1), "--recovery-relaunch"] }); } catch {}
+  }
+  setTimeout(() => app.exit(1), 150);
+});
 process.on("unhandledRejection", (reason) => writeDiagnostic("unhandledRejection", reason));
 const { createStore } = require("./store");
-// electron-updater 為選用：缺少時 App 仍須能啟動（避免 MODULE_NOT_FOUND 在頂層崩潰）
-let autoUpdater = null;
-try {
-  ({ autoUpdater } = require("electron-updater"));
-} catch (error) {
-  console.warn("[updater] electron-updater 不可用，已停用自動更新：", error.message);
-}
 const { eventOccursOnDate } = require("./utils");
 const { handleVoiceCommand } = require("./voiceCommands");
 const { parseVoiceIntent, applyIntent, testClaude } = require("./voiceIntent");
@@ -73,6 +87,8 @@ let trashCleanupTimer;
 let shortcutRetryTimer;
 let isQuitting = false;
 let voiceShortcut = "Alt+Space";
+let shortcutTestResolver;
+let hasShownBackgroundNotification = false;
 let voiceRecognizerSession;
 let installedVoiceRecognizerApp;
 let installedCalendarBridgeApp;
@@ -143,7 +159,7 @@ function createVoiceWindow() {
     hasShadow: false,
     show: false,
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, "voice-preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
@@ -173,6 +189,10 @@ function showMainWindow(route = "today") {
 }
 
 function showVoiceWindow() {
+  if (shortcutTestResolver) {
+    shortcutTestResolver(true);
+    shortcutTestResolver = null;
+  }
   if (!voiceWindow) createVoiceWindow();
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const [width, height] = voiceWindow.getSize();
@@ -300,6 +320,40 @@ function calendarSyncEnabled(data) {
   return Boolean(data.settings.calendarSyncEnabled || data.settings.reminderSyncEnabled);
 }
 
+class CalendarSyncTimeoutError extends Error {
+  constructor() {
+    super("行事曆同步仍在背景進行");
+    this.name = "CalendarSyncTimeoutError";
+  }
+}
+
+function withCalendarVoiceTimeout(promise, timeoutMs = 15_000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new CalendarSyncTimeoutError()), timeoutMs);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); }
+    );
+  });
+}
+
+function syncBroadcastSignature(data) {
+  return JSON.stringify({
+    tasks: data.tasks,
+    trash: data.trash,
+    pendingDeletes: data.sync?.pendingDeletes,
+    pendingEventActions: data.sync?.pendingEventActions,
+    deletedExternalItems: data.sync?.deletedExternalItems,
+    warnings: data.sync?.warnings,
+    lastSyncError: data.sync?.lastSyncError
+  });
+}
+
+function persistedContentSignature(data) {
+  const { revision, ...content } = data || {};
+  return JSON.stringify(content);
+}
+
 function shouldUseDeterministicQuery(transcript, intent) {
   if (intent?.action !== "query") return false;
   const text = String(transcript || "");
@@ -391,8 +445,13 @@ function calendarNotReadyResponse(original, mutation, data) {
 
 async function performCalendarSync() {
   if (calendarSyncPromise) return calendarSyncPromise;
-  const current = finalizeExpiredTrash(store.read());
-  store.write(current);
+  const beforeFinalize = store.read();
+  let current = finalizeExpiredTrash(beforeFinalize);
+  if (syncBroadcastSignature(beforeFinalize) !== syncBroadcastSignature(current)) {
+    current = store.write(current);
+  } else {
+    current = beforeFinalize;
+  }
   if (!calendarSyncEnabled(current)) return current;
 
   calendarSyncPromise = (async () => {
@@ -405,9 +464,9 @@ async function performCalendarSync() {
       }, 30_000);
       const latest = store.read();
       const merged = mergeSyncResult(latest, result);
-      store.write(merged);
-      sendDataChanged(merged);
-      return merged;
+      const saved = store.write(merged);
+      if (syncBroadcastSignature(latest) !== syncBroadcastSignature(saved)) sendDataChanged(saved);
+      return saved;
     } catch (error) {
       const latest = store.read();
       latest.sync = {
@@ -415,8 +474,8 @@ async function performCalendarSync() {
         lastSyncError: error.message,
         warnings: []
       };
-      store.write(latest);
-      sendDataChanged(latest);
+      const saved = store.write(latest);
+      sendDataChanged(saved);
       throw error;
     } finally {
       calendarSyncPromise = null;
@@ -441,8 +500,8 @@ function cleanExpiredTrash() {
     cleaned.trash.length !== (current.trash || []).length ||
     cleaned.sync.pendingDeletes.length !== (current.sync?.pendingDeletes || []).length;
   if (!changed) return;
-  store.write(cleaned);
-  sendDataChanged(cleaned);
+  const saved = store.write(cleaned);
+  sendDataChanged(saved);
   scheduleCalendarSync(0);
 }
 
@@ -471,7 +530,7 @@ function stopNativeVoiceRecognition() {
   cleanUpVoiceSession(session);
 }
 
-function startNativeVoiceRecognition() {
+function startNativeVoiceRecognition(isSilenceRetry = false) {
   stopNativeVoiceRecognition();
   const executable = voiceRecognizerExecutablePath();
   if (!fs.existsSync(executable)) {
@@ -509,7 +568,7 @@ function startNativeVoiceRecognition() {
     });
   });
 
-  child.stderr.on("data", (chunk) => writeDiagnostic("voice-helper", chunk.toString("utf8").trim()));
+  child.stderr.on("data", (chunk) => writeVoiceHelperLog(chunk.toString("utf8").trim()));
 
   child.on("error", (error) => {
     writeDiagnostic("voice-helper-error", error);
@@ -518,7 +577,7 @@ function startNativeVoiceRecognition() {
   });
 
   child.on("exit", (code, signal) => {
-    writeDiagnostic("voice-helper-exit", `code=${code} signal=${signal || ""}`);
+    writeVoiceHelperLog(`exit code=${code} signal=${signal || ""}`);
     // Process any remaining buffered lines using shared helper
     if (session.bufferedOutput.trim()) {
       session.bufferedOutput = processJsonLines(session.bufferedOutput, (payload) => {
@@ -531,6 +590,10 @@ function startNativeVoiceRecognition() {
     }
     const shouldReportFailure = !session.stopped && !session.receivedTerminalEvent;
     cleanUpVoiceSession(session);
+    if (code === 7 && !session.stopped && !isSilenceRetry && voiceWindow?.isVisible()) {
+      setTimeout(() => startNativeVoiceRecognition(true), 400);
+      return;
+    }
     if (shouldReportFailure) {
       const messages = {
         2: "需要允許語音辨識權限。",
@@ -562,15 +625,35 @@ function warmUpVoicePermission() {
   } catch {}
 }
 
-function registerVoiceShortcut() {
-  const candidates = ["Alt+Space", "CommandOrControl+Shift+Space"];
+function voiceShortcutCallback() {
+  showVoiceWindow();
+}
+
+function validAccelerator(value) {
+  return typeof value === "string" && value.length <= 80 && /^(?=.*(?:Command|CommandOrControl|Control|Alt|Option|Shift|Super|Meta|CmdOrCtrl|F\d+))[-+A-Za-z0-9]+$/i.test(value);
+}
+
+function registerVoiceShortcut(preferred = store?.read().settings.voiceShortcut || "Alt+Space") {
+  const previousShortcut = voiceShortcut && globalShortcut.isRegistered(voiceShortcut) ? voiceShortcut : "";
+  const candidates = [...new Set([
+    validAccelerator(preferred) ? preferred : "Alt+Space",
+    "Alt+Space",
+    "CommandOrControl+Shift+Space"
+  ])];
   for (const accelerator of candidates) {
-    if (globalShortcut.register(accelerator, showVoiceWindow)) {
+    if (accelerator === previousShortcut) {
       voiceShortcut = accelerator;
-      if (accelerator !== "Alt+Space") {
+      return;
+    }
+    let registered = false;
+    try { registered = globalShortcut.register(accelerator, voiceShortcutCallback); } catch {}
+    if (registered) {
+      if (previousShortcut && previousShortcut !== accelerator) globalShortcut.unregister(previousShortcut);
+      voiceShortcut = accelerator;
+      if (accelerator !== preferred) {
         new Notification({
           title: "快捷鍵已變更",
-          body: "⌥ Space 目前無法使用，暫時改用 ⌘⇧Space 呼叫。若仍沒反應，請檢查 ChatGPT 等 App 的快捷鍵設定。"
+          body: `${preferred} 目前無法使用，暫時改用 ${accelerator} 呼叫。若仍沒反應，請檢查 ChatGPT 等 App 的快捷鍵設定。`
         }).show();
       }
       return;
@@ -582,8 +665,9 @@ function registerVoiceShortcut() {
 }
 
 function retryPreferredShortcut() {
+  if ((store?.read().settings.voiceShortcut || "Alt+Space") !== "Alt+Space") return;
   if (voiceShortcut === "Alt+Space") return;
-  if (!globalShortcut.register("Alt+Space", showVoiceWindow)) return;
+  if (!globalShortcut.register("Alt+Space", voiceShortcutCallback)) return;
   if (voiceShortcut) globalShortcut.unregister(voiceShortcut);
   voiceShortcut = "Alt+Space";
   buildTray();
@@ -593,7 +677,15 @@ function retryPreferredShortcut() {
 function shortcutLabel() {
   if (voiceShortcut === "Alt+Space") return "⌥ Space";
   if (voiceShortcut === "CommandOrControl+Shift+Space") return "⌘ ⇧ Space";
+  if (voiceShortcut) return voiceShortcut.replace(/CommandOrControl|CmdOrCtrl/g, "⌘").replace(/Alt|Option/g, "⌥").replace(/Shift/g, "⇧").replace(/Control/g, "⌃").replaceAll("+", " ");
   return "選單列";
+}
+
+function rebuildShortcut(preferred) {
+  registerVoiceShortcut(preferred);
+  buildTray();
+  voiceWindow?.webContents.send("shortcut-changed", shortcutLabel());
+  return { accelerator: voiceShortcut, label: shortcutLabel(), registered: Boolean(voiceShortcut) };
 }
 
 function buildTray() {
@@ -613,8 +705,6 @@ function buildTray() {
       { label: "寫今天的日誌", click: () => showMainWindow("journal") },
       { label: "立即同步行事曆", click: () => performCalendarSync().catch(() => showMainWindow("settings")) },
       { type: "separator" },
-      { label: "檢查更新", click: () => autoUpdater?.checkForUpdates().catch(() => {}) },
-      { type: "separator" },
       { label: "結束貼身小秘書", click: () => app.quit() }
     ])
   );
@@ -630,7 +720,10 @@ function buildApplicationMenu() {
       { label: "隱藏視窗", accelerator: "Command+Q", click: () => {
         mainWindow?.hide();
         hideVoiceWindow();
-        new Notification({ title: "貼身小秘書仍在背景待命", body: "Option+Space 隨時召喚；要完全結束請用選單列圖示。" }).show();
+        if (!hasShownBackgroundNotification) {
+          hasShownBackgroundNotification = true;
+          new Notification({ title: "貼身小秘書仍在背景待命", body: `${shortcutLabel()} 隨時召喚；要完全結束請用選單列圖示。` }).show();
+        }
       } },
       { label: "結束貼身小秘書", accelerator: "Command+Option+Q", click: () => app.quit() }
     ] },
@@ -644,7 +737,7 @@ function buildApplicationMenu() {
 
 function sendDataChanged(data) {
   mainWindow?.webContents.send("data-changed", data);
-  voiceWindow?.webContents.send("data-changed", data);
+  voiceWindow?.webContents.send("settings-changed", data.settings);
 }
 
 function getDueTasks(data, now = new Date()) {
@@ -725,14 +818,17 @@ function checkReminders() {
   }
 
   data.notifiedKeys = data.notifiedKeys.filter((key) => key.includes(today)).slice(-100);
-  store.write(data);
-  sendDataChanged(data);
+  const saved = store.write(data);
+  sendDataChanged(saved);
 }
 
 function registerIpc() {
   ipcMain.handle("data:get", () => store.read());
   ipcMain.handle("data:save", (_, data) => {
     const previous = store.read();
+    if (Number(data?.revision) !== previous.revision) {
+      return { ...previous, _saveConflict: true };
+    }
     const saved = store.write(data);
     sendDataChanged(saved);
     scheduleCalendarSync();
@@ -768,6 +864,29 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle("voice:shortcut", () => shortcutLabel());
+  ipcMain.handle("voice:shortcut-set", (_, accelerator) => {
+    const preferred = String(accelerator || "").trim();
+    if (!validAccelerator(preferred)) {
+      return { registered: false, error: "快捷鍵格式不正確。" };
+    }
+    const current = store.read();
+    current.settings.voiceShortcut = preferred;
+    const saved = store.write(current);
+    sendDataChanged(saved);
+    return rebuildShortcut(preferred);
+  });
+  ipcMain.handle("voice:shortcut-test", () => new Promise((resolve) => {
+    if (shortcutTestResolver) shortcutTestResolver(false);
+    let finished = false;
+    const finish = (triggered) => {
+      if (finished) return;
+      finished = true;
+      shortcutTestResolver = null;
+      resolve({ triggered, message: triggered ? "快捷鍵測試成功。" : "沒有收到快捷鍵；可能被其他 App 攔截。" });
+    };
+    shortcutTestResolver = finish;
+    setTimeout(() => finish(false), 10_000);
+  }));
   ipcMain.handle("voice:listen-start", () => startNativeVoiceRecognition());
   ipcMain.handle("voice:listen-stop", () => {
     stopNativeVoiceRecognition();
@@ -779,10 +898,12 @@ function registerIpc() {
     const snapshot = store.read();
     const apiKey = secretStore.getSecret("claudeApiKey");
     let intent = null;
+    let aiFallback = false;
     try {
       intent = await parseVoiceIntent(snapshot, transcript, snapshot.settings, apiKey, new Date(), conversationHistory);
     } catch (error) {
       console.warn("[voice] AI 解析失敗，改用規則式：", error.message);
+      aiFallback = true;
       intent = null;
     }
 
@@ -799,7 +920,11 @@ function registerIpc() {
     } else if (contextualFallback) {
       result = { data: current, response: contextualFallback };
     } else {
-      result = handleVoiceCommand(current, transcript);
+      result = handleVoiceCommand(current, transcript, new Date(), { requireAddConfirmation: aiFallback });
+    }
+
+    if (aiFallback) {
+      result.response = `（AI 沒回應，我先用基本模式處理）${result.response || ""}`;
     }
 
     if (
@@ -810,8 +935,9 @@ function registerIpc() {
     }
 
     const mutation = calendarVoiceMutation(current, result.data);
-    const saved = store.write(result.data);
-    sendDataChanged(saved);
+    const didChangeData = persistedContentSignature(current) !== persistedContentSignature(result.data);
+    const saved = didChangeData ? store.write(result.data) : current;
+    if (didChangeData) sendDataChanged(saved);
 
     let response = result.response;
     let finalData = saved;
@@ -822,14 +948,16 @@ function registerIpc() {
         route ||= "settings";
       } else {
         try {
-          finalData = await performCalendarSync();
+          finalData = await withCalendarVoiceTimeout(performCalendarSync());
           response = naturalCalendarResponse(response, mutation, finalData);
         } catch (error) {
-          response = `${response} 但同步到 Google 或 Apple 行事曆時失敗：${error.message}`;
+          response = error instanceof CalendarSyncTimeoutError
+            ? `${response} 同步比較久，我先記下來，稍後會在背景完成。`
+            : `${response} 但同步到 Google 或 Apple 行事曆時失敗：${error.message}`;
           finalData = store.read();
         }
       }
-    } else {
+    } else if (didChangeData) {
       scheduleCalendarSync();
     }
 
@@ -854,20 +982,6 @@ function registerIpc() {
   );
   ipcMain.handle("shell:show-data", () => shell.showItemInFolder(store.dataPath));
 
-  ipcMain.handle("app:check-update", async () => {
-    if (!app.isPackaged) {
-      return { available: false, message: "開發模式不自動檢查更新" };
-    }
-    if (!autoUpdater) {
-      return { available: false, message: "自動更新元件不可用" };
-    }
-    try {
-      const result = await autoUpdater.checkForUpdates();
-      return { available: !!result?.updateInfo, version: result?.updateInfo?.version };
-    } catch (e) {
-      return { available: false, error: e.message };
-    }
-  });
 
   ipcMain.handle("ai:test-connection", async () => {
     // Placeholder - will be replaced by real implementation in aiVoice module
@@ -911,25 +1025,28 @@ app.whenReady().then(() => {
     app.dock.setIcon(getAppIcon());
   }
 
-  store = createStore(app.getPath("userData"));
+  store = createStore(app.getPath("userData"), {
+    onRecovery: ({ restored }) => new Notification({
+      title: "主資料檔損毀",
+      body: restored
+        ? "已從備份還原；損毀檔已保留為 .corrupt-*。"
+        : "損毀檔已保留，但備份也無法讀取；目前以空白資料安全啟動。"
+    }).show()
+  });
   secretStore = createSecretStore(app.getPath("userData"));
-  ensureCalendarBridgeInstalled();
+  registerIpc();
+  createMainWindow();
+  createVoiceWindow();
+  registerVoiceShortcut();
+  buildTray();
+  buildApplicationMenu();
+  shortcutRetryTimer = setInterval(retryPreferredShortcut, 60_000);
 
-  // Auto-update setup (requires proper signing + publish config in electron-builder)
-  if (app.isPackaged && autoUpdater) {
-    autoUpdater.autoDownload = false;
-    autoUpdater.on("update-available", (info) => {
-      console.log(`[updater] Update available: ${info.version}`);
-      autoUpdater.downloadUpdate().catch(console.error);
-    });
-    autoUpdater.on("update-downloaded", () => {
-      console.log("[updater] Update downloaded, will install on quit");
-      setTimeout(() => autoUpdater.quitAndInstall(false, true), 1500);
-    });
-    autoUpdater.on("error", (err) => {
-      console.error("[updater] Error:", err.message || err);
-    });
-    autoUpdater.checkForUpdates().catch(() => {});
+  try {
+    ensureCalendarBridgeInstalled();
+  } catch (error) {
+    writeDiagnostic("calendar-helper-install", error);
+    new Notification({ title: "行事曆元件暫時無法安裝", body: "其他功能仍可使用；詳細資訊已寫入診斷日誌。" }).show();
   }
   session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
     if (permission !== "media") return false;
@@ -942,13 +1059,6 @@ app.whenReady().then(() => {
       (!details || details.mediaTypes?.includes("audio") || details.mediaType === "audio");
     callback(Boolean(isAudioRequest));
   });
-  registerIpc();
-  createMainWindow();
-  createVoiceWindow();
-  registerVoiceShortcut();
-  buildTray();
-  buildApplicationMenu();
-  shortcutRetryTimer = setInterval(retryPreferredShortcut, 60_000);
   // 手動啟動時自動顯示主視窗；只有「登入自動啟動（openAsHidden）」時才維持背景待命
   const isLoginLaunch = app.getLoginItemSettings().openAtLogin && os.uptime() < 120;
   if (!isLoginLaunch) {
@@ -975,6 +1085,16 @@ app.whenReady().then(() => {
   }
 
   app.on("activate", () => showMainWindow("today"));
+}).catch((error) => {
+  writeDiagnostic("whenReady", error);
+  try {
+    new Notification({ title: "貼身小秘書啟動不完整", body: "正在嘗試自動重新啟動；詳細資訊已寫入診斷日誌。" }).show();
+  } catch {}
+  if (!process.argv.includes("--recovery-relaunch")) {
+    app.relaunch({ args: [...process.argv.slice(1), "--recovery-relaunch"] });
+  }
+  isQuitting = true;
+  app.exit(1);
 });
 
 app.on("second-instance", () => {

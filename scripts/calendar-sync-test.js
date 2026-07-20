@@ -455,6 +455,54 @@ const remoteReminderDeletedMerged = mergeSyncResult(
 );
 assert.equal(remoteReminderDeletedMerged.tasks.length, 0);
 
+const stableImported = mergeSyncResult(
+  { tasks: [], trash: [], settings: { calendarId: "google-calendar" }, sync: { pendingDeletes: [], deletedExternalItems: [] } },
+  {
+    links: [],
+    externalItems: [{
+      title: "穩定識別碼會議", date: "2026-06-20", reminderTime: "10:00", endTime: "11:00",
+      kind: "event", updatedAt: "2026-06-12T06:00:00.000Z",
+      external: { provider: "eventkit", type: "event", id: "stable-event", calendarId: "google-calendar" }
+    }],
+    removedDeletes: [], warnings: [], synced: { events: true, reminders: false }
+  },
+  new Date("2026-06-12T06:01:00.000Z")
+);
+const stableId = stableImported.tasks[0].id;
+const stableRescheduled = mergeSyncResult(
+  stableImported,
+  {
+    links: [],
+    externalItems: [{
+      title: "穩定識別碼會議", date: "2026-06-21", reminderTime: "14:00", endTime: "15:00",
+      kind: "event", updatedAt: "2026-06-12T07:00:00.000Z",
+      external: { provider: "eventkit", type: "event", id: "stable-event", calendarId: "google-calendar" }
+    }],
+    removedDeletes: [], warnings: [], synced: { events: true, reminders: false }
+  },
+  new Date("2026-06-12T07:01:00.000Z")
+);
+assert.equal(stableRescheduled.tasks.length, 1);
+assert.equal(stableRescheduled.tasks[0].id, stableId);
+assert.equal(stableRescheduled.tasks[0].date, "2026-06-21");
+
+const movedTombstone = mergeSyncResult(
+  {
+    tasks: [], trash: [], settings: { calendarId: "google-calendar" },
+    sync: { pendingDeletes: [{ id: "stable-event", type: "event", calendarId: "google-calendar", date: "2026-06-20", reminderTime: "10:00" }], deletedExternalItems: [] }
+  },
+  {
+    links: [], externalItems: [{
+      title: "穩定識別碼會議", date: "2026-06-21", reminderTime: "14:00", kind: "event",
+      updatedAt: "2026-06-12T07:00:00.000Z",
+      external: { provider: "eventkit", type: "event", id: "stable-event", calendarId: "google-calendar" }
+    }],
+    removedDeletes: [], warnings: [], synced: { events: true, reminders: false }
+  },
+  new Date("2026-06-12T07:02:00.000Z")
+);
+assert.equal(movedTombstone.tasks.length, 0);
+
 console.log("✓ 合併 Apple／Google 行事曆資料");
 console.log("✓ 同步匯入邀請回覆狀態");
 console.log("✓ 同步刪除提醒事項");
@@ -465,4 +513,5 @@ console.log("✓ 跨午夜行程會在隔日延續顯示");
 console.log("✓ 刪除復原期限內不刪除雲端項目");
 console.log("✓ 清理已處理的會議同步動作");
 console.log("✓ Google／Apple 端刪除會同步移除本機副本");
+console.log("✓ 外部行程改期維持本地 ID，墓碑不受日期改動失效");
 console.log("行事曆同步測試全部通過");

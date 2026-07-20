@@ -2,8 +2,10 @@ import EventKit
 import Foundation
 import AppKit
 
-struct BridgeError: Error {
+struct BridgeError: LocalizedError {
     let message: String
+
+    var errorDescription: String? { message }
 }
 
 let store = EKEventStore()
@@ -11,6 +13,8 @@ let encoder = JSONEncoder()
 encoder.outputFormatting = [.sortedKeys]
 let resultPath = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : ""
 let inputPath = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : ""
+let syncConflictTolerance: TimeInterval = 2
+let eventImportFutureDays = 90
 
 func emit(_ value: Any) {
     guard JSONSerialization.isValidJSONObject(value),
@@ -191,6 +195,16 @@ let isoFormatter: ISO8601DateFormatter = {
     return formatter
 }()
 
+let isoFormatterWithoutFractionalSeconds: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+}()
+
+func dateFromISO(_ value: String) -> Date? {
+    isoFormatter.date(from: value) ?? isoFormatterWithoutFractionalSeconds.date(from: value)
+}
+
 func isoString(_ date: Date?) -> String {
     guard let date else { return "" }
     return isoFormatter.string(from: date)
@@ -264,42 +278,115 @@ func selectedCalendar(_ id: String?, type: EKEntityType) -> EKCalendar? {
     return store.calendars(for: type).first { $0.calendarIdentifier == id }
 }
 
-func matchingEvent(for item: [String: Any], identifier: String) -> EKEvent? {
+enum EventMatchResult {
+    case found(EKEvent)
+    case notFound
+    case ambiguous(Int)
+    case unsafe(String)
+}
+
+struct EventMatchDetails {
+    let calendar: EKCalendar
+    let date: String
+    let day: Date
+    let title: String
+    let time: String
+    let isAllDay: Bool
+}
+
+func eventWithIdentifier(_ identifier: String) -> EKEvent? {
+    store.event(withIdentifier: identifier)
+        ?? (store.calendarItem(withIdentifier: identifier) as? EKEvent)
+}
+
+func eventMatchDetails(for item: [String: Any]) -> EventMatchDetails? {
     let external = taskExternal(item)
     guard
         let calendarId = (item["calendarId"] as? String) ?? (external?["calendarId"] as? String),
         let calendar = selectedCalendar(calendarId, type: .event),
         let date = item["date"] as? String,
-        let day = dateFormatter.date(from: date)
-    else { return store.event(withIdentifier: identifier) }
+        let day = dateFormatter.date(from: date),
+        let rawTitle = item["title"] as? String,
+        let time = item["reminderTime"] as? String
+    else { return nil }
 
-    let start = Calendar.current.startOfDay(for: day)
-    let end = Calendar.current.date(byAdding: .day, value: 2, to: start) ?? start
-    let title = (item["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let time = item["reminderTime"] as? String
-    let predicate = store.predicateForEvents(withStart: start, end: end, calendars: [calendar])
-
-    let occurrence = store.events(matching: predicate).first { event in
-        let parts = dateParts(event.startDate)
-        return event.title?.trimmingCharacters(in: .whitespacesAndNewlines) == title &&
-            parts.0 == date &&
-            (time?.isEmpty != false || parts.1 == time)
-    }
-    return occurrence ?? store.event(withIdentifier: identifier)
+    let isAllDay = (item["isAllDay"] as? Bool) ?? time.isEmpty
+    guard isAllDay == time.isEmpty else { return nil }
+    return EventMatchDetails(
+        calendar: calendar,
+        date: date,
+        day: day,
+        title: rawTitle.trimmingCharacters(in: .whitespacesAndNewlines),
+        time: time,
+        isAllDay: isAllDay
+    )
 }
 
-func removePendingItems(_ deletes: [[String: Any]]) -> [[String: Any]] {
+func eventMatches(_ event: EKEvent, details: EventMatchDetails) -> Bool {
+    let parts = dateParts(event.startDate)
+    return event.calendar.calendarIdentifier == details.calendar.calendarIdentifier
+        && event.title?.trimmingCharacters(in: .whitespacesAndNewlines) == details.title
+        && parts.0 == details.date
+        && event.isAllDay == details.isAllDay
+        && (details.isAllDay || parts.1 == details.time)
+}
+
+func fallbackEventMatch(details: EventMatchDetails) -> EventMatchResult {
+    let start = Calendar.current.startOfDay(for: details.day)
+    let end = Calendar.current.date(byAdding: .day, value: 1, to: start) ?? start
+    let predicate = store.predicateForEvents(withStart: start, end: end, calendars: [details.calendar])
+    let matches = store.events(matching: predicate).filter { eventMatches($0, details: details) }
+
+    if matches.count == 1 { return .found(matches[0]) }
+    if matches.count > 1 { return .ambiguous(matches.count) }
+    return .notFound
+}
+
+func matchingEvent(for item: [String: Any], identifier: String) -> EventMatchResult {
+    if let direct = eventWithIdentifier(identifier) { return .found(direct) }
+    guard let details = eventMatchDetails(for: item) else { return .notFound }
+    return fallbackEventMatch(details: details)
+}
+
+func matchingEventForDeletion(_ item: [String: Any], identifier: String) -> EventMatchResult {
+    let direct = eventWithIdentifier(identifier)
+    guard let details = eventMatchDetails(for: item) else {
+        return .unsafe("刪除資料缺少完整的日曆、標題、日期或時間")
+    }
+
+    if let direct, eventMatches(direct, details: details) {
+        return .found(direct)
+    }
+
+    let fallback = fallbackEventMatch(details: details)
+    if case .notFound = fallback, direct != nil {
+        return .unsafe("識別碼對應的行程與待刪除日期、時間或全天狀態不一致")
+    }
+    return fallback
+}
+
+func removePendingItems(_ deletes: [[String: Any]], warnings: inout [String]) -> [[String: Any]] {
     var removed: [[String: Any]] = []
     for item in deletes {
         guard let id = item["id"] as? String,
               let type = item["type"] as? String else { continue }
+        let title = (item["title"] as? String) ?? "行程"
         do {
             if type == "event" {
-                guard let event = matchingEvent(for: item, identifier: id) else {
+                let match = matchingEventForDeletion(item, identifier: id)
+                switch match {
+                case .found(let event):
+                    try store.remove(event, span: .thisEvent, commit: true)
+                case .notFound:
                     if item["date"] != nil { removed.append(item) }
                     continue
+                case .ambiguous(let count):
+                    warnings.append("「\(title)」找到 \(count) 筆完全相同的行程，為避免刪錯，這次沒有刪除。")
+                    continue
+                case .unsafe(let reason):
+                    warnings.append("「\(title)」未刪除：\(reason)。")
+                    continue
                 }
-                try store.remove(event, span: .thisEvent, commit: true)
             } else if type == "reminder" {
                 guard let reminder = store.calendarItem(withIdentifier: id) as? EKReminder else {
                     removed.append(item)
@@ -311,6 +398,7 @@ func removePendingItems(_ deletes: [[String: Any]]) -> [[String: Any]] {
             }
             removed.append(item)
         } catch {
+            warnings.append("「\(title)」刪除失敗：\(error.localizedDescription)")
             fputs("CalendarBridge delete warning: \(error.localizedDescription)\n", stderr)
         }
     }
@@ -342,9 +430,23 @@ func applyPendingEventActions(_ actions: [[String: Any]], warnings: inout [Strin
             continue
         }
 
-        guard let event = matchingEvent(for: action, identifier: externalId),
-              let nextDate = action["nextDate"] as? String else {
+        guard let nextDate = action["nextDate"] as? String else {
             removed.append(action)
+            continue
+        }
+
+        let event: EKEvent
+        switch matchingEvent(for: action, identifier: externalId) {
+        case .found(let matched):
+            event = matched
+        case .notFound:
+            removed.append(action)
+            continue
+        case .ambiguous(let count):
+            warnings.append("「\(title)」找到 \(count) 筆完全相同的行程，為避免改錯，這次沒有改期。")
+            continue
+        case .unsafe(let reason):
+            warnings.append("「\(title)」未改期：\(reason)。")
             continue
         }
 
@@ -382,46 +484,83 @@ func applyPendingEventActions(_ actions: [[String: Any]], warnings: inout [Strin
     return (removed, links)
 }
 
-func localIsNewer(task: [String: Any], item: EKCalendarItem?) -> Bool {
-    guard let item, let externalModified = item.lastModifiedDate else { return true }
-    let localValue = (task["updatedAt"] as? String) ?? (task["createdAt"] as? String) ?? ""
-    guard let localModified = isoFormatter.date(from: localValue) else { return true }
-    return localModified.timeIntervalSince(externalModified) > 2
+func localShouldOverwriteRemote(
+    task: [String: Any],
+    item: EKCalendarItem?,
+    warnings: inout [String]
+) -> Bool {
+    guard let item else { return true }
+    let title = (task["title"] as? String) ?? "事項"
+    guard let externalValue = taskExternal(task)?["modifiedAt"] as? String,
+          !externalValue.isEmpty else {
+        warnings.append("「\(title)」缺少上次同步時間，為避免覆蓋其他裝置的修改，這次未回寫。")
+        return false
+    }
+    guard let externalSnapshot = dateFromISO(externalValue) else {
+        warnings.append("「\(title)」的上次同步時間格式無法解析，為避免覆蓋其他裝置的修改，這次未回寫。")
+        return false
+    }
+    guard let localValue = (task["updatedAt"] as? String) ?? (task["createdAt"] as? String),
+          !localValue.isEmpty else {
+        warnings.append("「\(title)」缺少本機修改時間，為避免覆蓋其他裝置的修改，這次未回寫。")
+        return false
+    }
+    guard let localModified = dateFromISO(localValue) else {
+        warnings.append("「\(title)」的本機修改時間格式無法解析，為避免覆蓋其他裝置的修改，這次未回寫。")
+        return false
+    }
+    guard localModified.timeIntervalSince(externalSnapshot) > syncConflictTolerance else {
+        return false
+    }
+    guard let remoteModified = item.lastModifiedDate else {
+        warnings.append("「\(title)」缺少行事曆端修改時間，為避免覆蓋其他裝置的修改，這次未回寫。")
+        return false
+    }
+    return localModified.timeIntervalSince(remoteModified) > syncConflictTolerance
 }
 
-func externalSnapshotIsCurrent(task: [String: Any]) -> Bool {
-    guard let external = taskExternal(task),
-          let externalValue = external["modifiedAt"] as? String,
-          let externalModified = isoFormatter.date(from: externalValue) else { return false }
-    let localValue = (task["updatedAt"] as? String) ?? (task["createdAt"] as? String) ?? ""
-    guard let localModified = isoFormatter.date(from: localValue) else { return false }
-    return localModified.timeIntervalSince(externalModified) <= 2
+func retryEventLink(localId: String, task: [String: Any]) -> [String: Any]? {
+    guard var external = taskExternal(task) else { return nil }
+    external["modifiedAt"] = ""
+    return ["localId": localId, "external": external]
 }
 
-func upsertEvent(task: [String: Any], calendar: EKCalendar) throws -> [String: Any]? {
+func upsertEvent(
+    task: [String: Any],
+    calendar: EKCalendar,
+    warnings: inout [String]
+) throws -> [String: Any]? {
     guard let localId = task["id"] as? String,
           let title = task["title"] as? String,
           let date = task["date"] as? String else { return nil }
 
     let external = taskExternal(task)
     let externalId = external?["id"] as? String
-    let existing = externalId.flatMap { matchingEvent(for: task, identifier: $0) }
+    let existing: EKEvent?
+    if let externalId {
+        switch matchingEvent(for: task, identifier: externalId) {
+        case .found(let event):
+            existing = event
+        case .notFound:
+            existing = nil
+        case .ambiguous(let count):
+            throw BridgeError(message: "「\(title)」找到 \(count) 筆完全相同的行程，為避免改錯，這次未同步。")
+        case .unsafe(let reason):
+            throw BridgeError(message: "「\(title)」未同步：\(reason)。")
+        }
+    } else {
+        existing = nil
+    }
     // App 自己建立的行程（有 origin）若被綁在跟目前選定不同的日曆上，自動搬家：
-    // 刪掉舊日曆上的，改建到現在選定的日曆（EventKit 不允許跨帳號移動，只能刪+建）
+    // 先在新日曆建立成功，再刪除舊行程；建立失敗時原行程完全不動。
     let isAppOwned = (task["origin"] as? String).map { !$0.isEmpty } ?? false
     let onWrongCalendar = isAppOwned && existing != nil
         && existing!.calendar.calendarIdentifier != calendar.calendarIdentifier
 
-    var base = existing
-    if onWrongCalendar {
-        try? store.remove(existing!, span: .thisEvent, commit: true)
-        base = nil
-    } else {
-        if externalSnapshotIsCurrent(task: task) { return nil }
-        guard localIsNewer(task: task, item: existing) else { return nil }
-    }
+    if !onWrongCalendar,
+       !localShouldOverwriteRemote(task: task, item: existing, warnings: &warnings) { return nil }
 
-    let event = base ?? EKEvent(eventStore: store)
+    let event = onWrongCalendar ? EKEvent(eventStore: store) : (existing ?? EKEvent(eventStore: store))
     let time = task["reminderTime"] as? String
     let endTime = task["endTime"] as? String
     let endDate = (task["endDate"] as? String) ?? date
@@ -440,23 +579,49 @@ func upsertEvent(task: [String: Any], calendar: EKCalendar) throws -> [String: A
     } else {
         event.endDate = Calendar.current.date(byAdding: .hour, value: 1, to: startDate) ?? startDate
     }
-    try store.save(event, span: .thisEvent, commit: true)
+    if onWrongCalendar, let oldEvent = existing {
+        do {
+            try store.save(event, span: .thisEvent, commit: true)
+        } catch {
+            warnings.append("「\(title)」搬移行事曆失敗，原行程已保留，稍後會重試：\(error.localizedDescription)")
+            return retryEventLink(localId: localId, task: task)
+        }
+
+        do {
+            try store.remove(oldEvent, span: .thisEvent, commit: true)
+        } catch {
+            let removalError = error
+            do {
+                try store.remove(event, span: .thisEvent, commit: true)
+                warnings.append("「\(title)」無法從舊日曆移除；新行程已回滾、原行程仍保留，稍後會重試：\(removalError.localizedDescription)")
+                return retryEventLink(localId: localId, task: task)
+            } catch {
+                warnings.append("「\(title)」已建立到新日曆，但舊行程與回滾都失敗，兩個日曆可能各留一筆：\(removalError.localizedDescription)；回滾：\(error.localizedDescription)")
+                return eventLink(localId: localId, event: event)
+            }
+        }
+    } else {
+        try store.save(event, span: .thisEvent, commit: true)
+    }
     let stableIdentifier = onWrongCalendar
         ? (event.eventIdentifier ?? event.calendarItemIdentifier)
         : (externalId ?? event.eventIdentifier ?? event.calendarItemIdentifier)
     return eventLink(localId: localId, event: event, stableIdentifier: stableIdentifier)
 }
 
-func upsertReminder(task: [String: Any], calendar: EKCalendar) throws -> [String: Any]? {
+func upsertReminder(
+    task: [String: Any],
+    calendar: EKCalendar,
+    warnings: inout [String]
+) throws -> [String: Any]? {
     guard let localId = task["id"] as? String,
           let title = task["title"] as? String,
           let date = task["date"] as? String else { return nil }
 
     let external = taskExternal(task)
     let externalId = external?["id"] as? String
-    if externalSnapshotIsCurrent(task: task) { return nil }
     let existing = externalId.flatMap { store.calendarItem(withIdentifier: $0) as? EKReminder }
-    guard localIsNewer(task: task, item: existing) else { return nil }
+    guard localShouldOverwriteRemote(task: task, item: existing, warnings: &warnings) else { return nil }
 
     let reminder = existing ?? EKReminder(eventStore: store)
     let time = task["reminderTime"] as? String
@@ -572,7 +737,7 @@ func runSync() throws {
     var links: [[String: Any]] = []
     var warnings: [String] = []
 
-    let removedDeletes = removePendingItems(pendingDeletes)
+    let removedDeletes = removePendingItems(pendingDeletes, warnings: &warnings)
     let actionResult = applyPendingEventActions(pendingEventActions, warnings: &warnings)
     let removedEventActions = actionResult.0
     links.append(contentsOf: actionResult.1)
@@ -581,10 +746,10 @@ func runSync() throws {
         let kind = (task["kind"] as? String) ?? "reminder"
         do {
             if kind == "event", syncEvents, let calendar,
-               let link = try upsertEvent(task: task, calendar: calendar) {
+               let link = try upsertEvent(task: task, calendar: calendar, warnings: &warnings) {
                 links.append(link)
             } else if kind != "event", syncReminders, let reminderList,
-                      let link = try upsertReminder(task: task, calendar: reminderList) {
+                      let link = try upsertReminder(task: task, calendar: reminderList, warnings: &warnings) {
                 links.append(link)
             }
         } catch {
@@ -595,7 +760,7 @@ func runSync() throws {
     var externalItems: [[String: Any]] = []
     let now = Date()
     let start = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
-    let end = Calendar.current.date(byAdding: .day, value: 365, to: now) ?? now
+    let end = Calendar.current.date(byAdding: .day, value: eventImportFutureDays, to: now) ?? now
 
     if syncEvents, let calendar {
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: [calendar])

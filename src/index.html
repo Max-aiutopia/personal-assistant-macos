@@ -4,13 +4,14 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>貼身小秘書</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <div id="renderer-status" class="renderer-status" role="alert" hidden></div>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
@@ -338,6 +339,20 @@
             </div>
             <div class="setting-row">
               <div>
+                <h3>呼叫快捷鍵</h3>
+                <p>使用 Electron accelerator 格式，例如 Alt+Space 或 CommandOrControl+Shift+Space。</p>
+                <p id="voice-shortcut-status" class="inline-status" role="status" aria-live="polite">套用後請測試，確認沒有被 ChatGPT 等 App 攔截。</p>
+              </div>
+              <div class="setting-control-stack shortcut-control">
+                <input id="voice-shortcut-input" type="text" placeholder="Alt+Space" autocomplete="off" spellcheck="false" />
+                <div class="setting-button-group">
+                  <button id="save-voice-shortcut-button" class="secondary-button" type="button">套用</button>
+                  <button id="test-voice-shortcut-button" class="secondary-button" type="button">測試快捷鍵</button>
+                </div>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div>
                 <h3>呼叫時自動聆聽</h3>
                 <p>按下 ⌥ Space 後立即開啟麥克風，不必再按按鈕。</p>
               </div>
@@ -389,9 +404,10 @@
               <div>
                 <h3>Claude API 金鑰</h3>
                 <p id="claude-key-status">尚未設定。貼上 sk-ant- 開頭的金鑰後按儲存（會用 Keychain 加密）。</p>
+                <p id="claude-test-status" class="inline-status" role="status" aria-live="polite"></p>
               </div>
               <div class="setting-control-stack">
-                <input id="claude-key-input" type="password" style="width: 240px;" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
+                <input id="claude-key-input" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
                 <button id="save-claude-key-button" class="secondary-button">儲存金鑰</button>
               </div>
             </div>
@@ -400,7 +416,7 @@
                 <h3>Claude 模型</h3>
                 <p>預設 claude-haiku-4-5（最快最省）。</p>
               </div>
-              <input id="claude-model-input" type="text" style="width: 200px;" placeholder="claude-haiku-4-5" />
+              <input id="claude-model-input" type="text" placeholder="claude-haiku-4-5" />
             </div>
             <div class="setting-row">
               <div>
@@ -417,14 +433,15 @@
                 <h3>Ollama 模型</h3>
                 <p>選 Ollama 時使用，建議 qwen2.5:3b 或 gemma2:2b。</p>
               </div>
-              <input id="ai-model-input" type="text" style="width: 180px;" placeholder="qwen2.5:3b" />
+              <input id="ai-model-input" type="text" placeholder="qwen2.5:3b" />
             </div>
             <div class="setting-row">
               <div>
                 <h3>Ollama 伺服器</h3>
                 <p>預設 http://localhost:11434</p>
+                <p id="ollama-test-status" class="inline-status" role="status" aria-live="polite"></p>
               </div>
-              <input id="ollama-url-input" type="text" style="width: 220px;" placeholder="http://localhost:11434" />
+              <input id="ollama-url-input" type="text" placeholder="http://localhost:11434" />
             </div>
             <div class="settings-actions">
               <button id="test-voice-button" class="secondary-button">測試語音</button>

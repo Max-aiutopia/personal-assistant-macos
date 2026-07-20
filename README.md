@@ -1,5 +1,7 @@
 # 貼身小秘書
 
+> 原始碼一律位於 `src/`；請勿在專案根目錄建立 `main.js`、`voice.js` 或 `index.html` 複本。
+
 一個支援語音與手機同步的 macOS 桌面小助理。
 
 ## 功能
@@ -34,8 +36,7 @@ npm start
 # 1. 編譯原生 helper + 打包
 npm run package
 
-# 2. (開發用) ad-hoc 簽名
-npm run sign
+# 2. package 已自動使用 Glow Secretary Local Signing 簽章
 
 # 3. 真實發佈需正式簽名 + notarization（需 Apple Developer 帳號）
 npm run notarize
@@ -58,13 +59,7 @@ npm run notarize
    xcrun stapler staple "dist/貼身小秘書-darwin-arm64/貼身小秘書.app"
    ```
 
-建議使用 `electron-builder`（已整合）來簡化公證、產生 DMG、支援 auto-update。
-
-新打包指令：
-- `npm run dist` ：使用 electron-builder 打包並自動處理公證（需設定 Apple 環境變數）。
-- `npm run dist:dir` ：只打包到目錄不產生安裝檔（測試用）。
-
-Auto-update 已內建，啟動時會自動檢查（需正確簽名 + GitHub releases 作為 publish provider）。
+目前只保留經實機驗證的 `electron-packager` 打包路徑。自動更新尚未配置正式 feed，為避免下載後無提示重啟，程式內不啟用 auto-update。
 
 資料預設保存在 Electron 的 `userData` 目錄，可在應用程式「設定」頁按「查看資料檔案」定位。
 

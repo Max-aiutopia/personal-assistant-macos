@@ -22,6 +22,7 @@ const {
   responseStatusSpeak,
   setEventResponse,
   rescheduleEvent,
+  enqueueExternalDelete,
   hasSameScheduledItem,
   addResponse
 } = require("./voiceCommands");
@@ -30,6 +31,19 @@ const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5";
 const DEFAULT_OLLAMA_URL = "http://localhost:11434";
 const ALLOWED_ROUTES = ["today", "tasks", "week", "month", "journal", "settings"];
+const ALLOWED_ACTIONS = Object.freeze([
+  "add",
+  "complete",
+  "delete",
+  "journal",
+  "query",
+  "navigate",
+  "respond_event",
+  "reschedule_event",
+  "close",
+  "none"
+]);
+const ALLOWED_ACTION_SET = new Set(ALLOWED_ACTIONS);
 
 const INTENT_TOOL = {
   name: "record_intent",
@@ -39,18 +53,7 @@ const INTENT_TOOL = {
     properties: {
       action: {
         type: "string",
-        enum: [
-          "add",
-          "complete",
-          "delete",
-          "journal",
-          "query",
-          "navigate",
-          "respond_event",
-          "reschedule_event",
-          "close",
-          "none"
-        ],
+        enum: ALLOWED_ACTIONS,
         description:
           "add=新增待辦/行程；complete=標記完成；delete=刪除；journal=記日誌；query=查詢回答（不改資料）；navigate=切換頁面；respond_event=接受/拒絕/暫定會議邀請；reschedule_event=改期或延後/提前行程；close=收起語音視窗；none=不確定"
       },
@@ -218,10 +221,12 @@ async function callOllama(data, transcript, settings, now, conversationHistory =
 }
 
 function resolveBrain(settings = {}) {
-  if (settings.voiceBrain === "claude" || settings.voiceBrain === "ollama" || settings.voiceBrain === "rules") {
+  if (settings.voiceBrain === "claude" || settings.voiceBrain === "ollama") {
     return settings.voiceBrain;
   }
-  if (settings.aiVoiceEnabled) return "ollama"; // 舊設定遷移
+  // normalize() 會替舊資料補上 voiceBrain="rules"，所以舊旗標必須先於
+  // rules 判斷，否則 aiVoiceEnabled=true 的既有使用者永遠無法遷移。
+  if (settings.aiVoiceEnabled) return "ollama";
   return "rules";
 }
 
@@ -232,7 +237,8 @@ function resolveBrain(settings = {}) {
 async function parseVoiceIntent(data, transcript, settings = {}, apiKey = "", now = new Date(), conversationHistory = []) {
   const brain = resolveBrain(settings);
   const history = normalizeVoiceHistory(conversationHistory);
-  if (brain === "claude" && apiKey) {
+  if (brain === "claude") {
+    if (!apiKey) throw new Error("尚未設定 Claude API 金鑰");
     return await callClaude(data, transcript, apiKey, settings.claudeModel, now, history);
   }
   if (brain === "ollama") {
@@ -329,7 +335,14 @@ function safeRoute(route) {
 function applyIntent(inputData, intent, now = new Date()) {
   const data = structuredClone(inputData);
   intent = intent || {};
-  let action = intent.action || "none";
+  const requestedAction = String(intent.action || "none").trim();
+  if (!ALLOWED_ACTION_SET.has(requestedAction)) {
+    return {
+      data,
+      response: "我還不確定這句話要怎麼處理，請告訴我要新增、完成、刪除、查詢，還是打開哪個頁面。"
+    };
+  }
+  let action = requestedAction;
   const transcript = String(intent._transcript || "");
   if (action === "journal" && transcriptLooksScheduled(transcript, now)) {
     action = "add";
@@ -339,7 +352,7 @@ function applyIntent(inputData, intent, now = new Date()) {
       kind: normalizeKind(intent, transcript)
     };
   }
-  const response = (intent?.response && String(intent.response).trim()) || "好的。";
+  const response = String(intent.response || "").trim();
   const route = safeRoute(intent?.route);
   const today = dateKey(now);
   const tomorrow = dateKey(addDays(now, 1));
@@ -348,7 +361,7 @@ function applyIntent(inputData, intent, now = new Date()) {
   if (action === "add") {
     const title = String(intent.title || "").trim();
     if (!title) {
-      return { data, response: response || "這件事的內容是什麼呢？再說一次給我聽。" };
+      return { data, response: "這件事的內容是什麼呢？請再說一次給我聽。" };
     }
     const kind = normalizeKind(intent, transcript);
     const dates = normalizeAddDates(intent, intent.title, now);
@@ -403,24 +416,34 @@ function applyIntent(inputData, intent, now = new Date()) {
   }
 
   if (action === "complete") {
-    const task = findTask(data, String(intent.title || ""));
+    const title = String(intent.title || "").trim();
+    if (!title) return { data, response: "你想完成哪一件待辦呢？" };
+    const task = findTask(data, title);
     if (!task) {
-      return { data, response: `我找不到「${intent.title || ""}」這件未完成的待辦。` };
+      return { data, response: `我找不到「${title}」這件未完成的待辦。` };
     }
     task.completed = true;
     task.completedAt = iso;
     task.updatedAt = iso;
-    return { data, response, hide: Boolean(intent.hide), route };
+    return {
+      data,
+      response: `做得好，「${task.title}」已經標示完成。`,
+      hide: Boolean(intent.hide),
+      route
+    };
   }
 
   if (action === "delete") {
-    const task = findTask(data, String(intent.title || "")) || findEvent(data, String(intent.title || ""));
+    const title = String(intent.title || "").trim();
+    if (!title) return { data, response: "你想刪除哪一個待辦或行程呢？" };
+    const task = findTask(data, title) || findEvent(data, title);
     if (!task) {
-      return { data, response: `我找不到「${intent.title || ""}」這個項目。` };
+      return { data, response: `我找不到「${title}」這個項目。` };
     }
-    data.tasks = data.tasks.filter((item) => item.id !== task.id);
     const deleteImmediately = task.kind === "event" && task.external?.provider === "eventkit";
-    if (!deleteImmediately) {
+    if (deleteImmediately) {
+      enqueueExternalDelete(data, task, now);
+    } else {
       data.trash = [
         ...(data.trash || []),
         {
@@ -431,7 +454,15 @@ function applyIntent(inputData, intent, now = new Date()) {
         }
       ];
     }
-    return { data, response, hide: Boolean(intent.hide), route };
+    data.tasks = data.tasks.filter((item) => item.id !== task.id);
+    return {
+      data,
+      response: deleteImmediately
+        ? `好，我幫你刪掉行程「${task.title}」。`
+        : `已刪除「${task.title}」，10 秒內可以在主畫面復原。`,
+      hide: Boolean(intent.hide),
+      route
+    };
   }
 
   if (action === "respond_event") {
@@ -448,7 +479,7 @@ function applyIntent(inputData, intent, now = new Date()) {
     setEventResponse(data, event, status, now);
     return {
       data,
-      response: response || `已把「${event.title}」標記為 ${responseStatusSpeak(status)}。`,
+      response: `已把「${event.title}」標記為 ${responseStatusSpeak(status)}。`,
       hide: Boolean(intent.hide),
       route: route || null
     };
@@ -482,7 +513,7 @@ function applyIntent(inputData, intent, now = new Date()) {
     }
     return {
       data,
-      response: response || `已把「${event.title}」改到 ${event.date}${event.reminderTime ? ` ${event.reminderTime}` : ""}。`,
+      response: `已把「${event.title}」改到 ${event.date}${event.reminderTime ? ` ${event.reminderTime}` : ""}。`,
       hide: Boolean(intent.hide),
       route: route || null
     };
@@ -490,26 +521,54 @@ function applyIntent(inputData, intent, now = new Date()) {
 
   if (action === "journal") {
     const content = String(intent.content || intent.title || "").trim();
-    if (!content) return { data, response: response || "你想記下什麼呢？" };
+    if (!content) return { data, response: "你想記下什麼呢？" };
     const entry = data.journal[today] || {};
     data.journal[today] = {
       ...entry,
       done: [entry.done, content].filter(Boolean).join("\n"),
       updatedAt: iso
     };
-    return { data, response, hide: Boolean(intent.hide), route };
+    return {
+      data,
+      response: `已經把「${content}」記在今天的日誌。`,
+      hide: Boolean(intent.hide),
+      route
+    };
   }
 
   if (action === "navigate") {
-    return { data, response, hide: true, route: route || "today" };
+    if (!route) return { data, response: "你想打開今天、待辦、週行程、月行程、日誌，還是設定頁面呢？" };
+    const routeLabels = {
+      today: "今天",
+      tasks: "待辦清單",
+      week: "本週行程",
+      month: "月行程",
+      journal: "每日記錄",
+      settings: "設定"
+    };
+    return { data, response: `已經替你打開${routeLabels[route]}。`, hide: true, route };
   }
 
   if (action === "close") {
-    return { data, response, hide: true };
+    return { data, response: "好的，需要我時再呼叫我。", hide: true };
   }
 
-  // query / none：不改資料，只回覆（route 仍允許帶頁面）
-  return { data, response, hide: Boolean(intent.hide), route };
+  if (action === "query") {
+    return {
+      data,
+      response: response || "你想查今天、明天，還是這週的安排呢？",
+      hide: Boolean(intent.hide),
+      route
+    };
+  }
+
+  // none：不信任可能帶有「已新增／已刪除」的模型成功台詞。
+  return {
+    data,
+    response: "我還不確定你要我怎麼處理。你可以叫我新增待辦、安排會議、記錄日誌或查詢行程。",
+    hide: Boolean(intent.hide),
+    route
+  };
 }
 
 /**
@@ -549,6 +608,7 @@ module.exports = {
   testClaude,
   resolveBrain,
   ALLOWED_ROUTES,
+  ALLOWED_ACTIONS,
   DEFAULT_CLAUDE_MODEL,
   // 匯出供測試
   callClaude,

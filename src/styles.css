@@ -28,6 +28,23 @@ body {
   overflow: hidden;
 }
 
+.renderer-status {
+  position: fixed;
+  z-index: 1000;
+  top: 14px;
+  left: 50%;
+  width: min(680px, calc(100vw - 36px));
+  padding: 10px 14px;
+  border: 1px solid #efb8c4;
+  border-radius: 12px;
+  background: #fff4f6;
+  color: #a13d54;
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  line-height: 1.5;
+  transform: translateX(-50%);
+}
+
 button,
 input,
 textarea,
@@ -1098,6 +1115,51 @@ dialog label {
   display: grid;
   justify-items: stretch;
   gap: 9px;
+}
+
+#claude-key-input,
+#voice-shortcut-input {
+  width: 240px;
+}
+
+#claude-model-input {
+  width: 200px;
+}
+
+#ai-model-input {
+  width: 180px;
+}
+
+#ollama-url-input {
+  width: 220px;
+}
+
+.setting-button-group {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.setting-button-group .secondary-button {
+  padding: 8px 10px;
+  font-size: 11px;
+}
+
+.setting-row .inline-status {
+  min-height: 1.4em;
+  margin-top: 7px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.setting-row .inline-status.success,
+.setting-row p.success {
+  color: #347a54;
+}
+
+.setting-row .inline-status.error,
+.setting-row p.error {
+  color: #b94d62;
 }
 
 .setting-control-stack select {
