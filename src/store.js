@@ -72,8 +72,19 @@ function createStore(userDataPath) {
     try {
       fs.mkdirSync(path.dirname(dataPath), { recursive: true });
       const tempPath = `${dataPath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), "utf8");
+      const fd = fs.openSync(tempPath, "w");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(data), "utf8");
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      try { fs.copyFileSync(dataPath, `${dataPath}.bak`); } catch {}
       fs.renameSync(tempPath, dataPath);
+      try {
+        const directoryFd = fs.openSync(path.dirname(dataPath), "r");
+        try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
+      } catch {}
     } catch (error) {
       console.error("Failed to persist assistant data:", error);
     }
@@ -98,6 +109,12 @@ function createStore(userDataPath) {
     } catch (error) {
       if (error.code !== "ENOENT") {
         console.error("Failed to read assistant data:", error);
+        try { fs.renameSync(dataPath, `${dataPath}.corrupt-${Date.now()}`); } catch {}
+        try {
+          const backup = JSON.parse(fs.readFileSync(`${dataPath}.bak`, "utf8"));
+          cached = normalize(backup);
+          return structuredClone(cached);
+        } catch {}
       }
       cached = structuredClone(DEFAULT_DATA);
       return structuredClone(cached);

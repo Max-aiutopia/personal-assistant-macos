@@ -47,7 +47,6 @@ const { normalizeVoiceHistory, contextFallbackResponse } = require("./voiceConte
 const { createSecretStore } = require("./secretStore");
 const {
   dedupeSyncedTasks,
-  enqueueDeletedTasks,
   finalizeExpiredTrash,
   mergeSyncResult,
   runCalendarBridge
@@ -293,7 +292,7 @@ function ensureCalendarBridgeInstalled() {
 
 async function requestCalendarAccess() {
   ensureCalendarBridgeInstalled();
-  return runCalendarBridge(calendarBridgeExecutablePath(), "request-access");
+  return runCalendarBridge(calendarBridgeExecutablePath(), "request-access", null, 180_000);
 }
 
 function calendarSyncEnabled(data) {
@@ -402,7 +401,7 @@ async function performCalendarSync() {
         tasks: current.tasks,
         pendingDeletes: current.sync?.pendingDeletes || [],
         pendingEventActions: current.sync?.pendingEventActions || []
-      });
+      }, 30_000);
       const latest = store.read();
       const merged = mergeSyncResult(latest, result);
       store.write(merged);
@@ -733,7 +732,7 @@ function registerIpc() {
   ipcMain.handle("data:get", () => store.read());
   ipcMain.handle("data:save", (_, data) => {
     const previous = store.read();
-    const saved = store.write(enqueueDeletedTasks(previous, data));
+    const saved = store.write(data);
     sendDataChanged(saved);
     scheduleCalendarSync();
     return saved;
@@ -810,7 +809,7 @@ function registerIpc() {
     }
 
     const mutation = calendarVoiceMutation(current, result.data);
-    const saved = store.write(enqueueDeletedTasks(current, result.data));
+    const saved = store.write(result.data);
     sendDataChanged(saved);
 
     let response = result.response;
@@ -846,7 +845,7 @@ function registerIpc() {
     voiceWindow?.webContents.send("voice:preview");
     return true;
   });
-  ipcMain.handle("calendar:status", () => runCalendarBridge(calendarBridgeExecutablePath(), "status"));
+  ipcMain.handle("calendar:status", () => runCalendarBridge(calendarBridgeExecutablePath(), "status", null, 15_000));
   ipcMain.handle("calendar:request-access", () => requestCalendarAccess());
   ipcMain.handle("calendar:sync", () => performCalendarSync());
   ipcMain.handle("calendar:open-accounts", () =>

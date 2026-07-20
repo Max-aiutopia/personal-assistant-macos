@@ -13,7 +13,7 @@ function parseBridgeResult(output) {
   return result;
 }
 
-async function runCalendarApp(appPath, command, payload) {
+async function runCalendarApp(appPath, command, payload, timeoutMs) {
   const runId = crypto.randomUUID();
   const resultPath = path.join(os.tmpdir(), `personal-assistant-calendar-${runId}.json`);
   const inputPath = payload
@@ -34,7 +34,7 @@ async function runCalendarApp(appPath, command, payload) {
         else reject(new Error(`無法啟動行事曆同步 App，代碼 ${code}。`));
       });
     });
-    await waitForFile(resultPath);
+    await waitForFile(resultPath, timeoutMs || 30_000);
     return parseBridgeResult(fs.readFileSync(resultPath, "utf8"));
   } finally {
     fs.rmSync(resultPath, { force: true });
@@ -42,11 +42,11 @@ async function runCalendarApp(appPath, command, payload) {
   }
 }
 
-function runCalendarBridge(target, command, payload) {
-  if (target.endsWith(".app")) return runCalendarApp(target, command, payload);
+function runCalendarBridge(target, command, payload, timeoutMs = 30_000) {
+  if (target.endsWith(".app")) return runCalendarApp(target, command, payload, timeoutMs);
 
   // Direct binary path - unified with voice streaming (stdout)
-  return runDirectBinary(target, [command], payload).then(result => {
+  return runDirectBinary(target, [command], payload, timeoutMs).then(result => {
     if (!result.ok) {
       throw new Error(result.error || "行事曆同步失敗。");
     }
@@ -272,10 +272,6 @@ function mergeSyncResult(inputData, result, now = new Date()) {
     if (task && link.external) task.external = link.external;
   }
 
-  for (const task of data.tasks) {
-    if (task.external?.type === "event") task.id = importedTaskId(task);
-  }
-
   const byExternal = new Map();
   for (const task of data.tasks) {
     const key = syncedTaskKey(task);
@@ -324,6 +320,11 @@ function mergeSyncResult(inputData, result, now = new Date()) {
   const presentExternalKeys = new Set((result.externalItems || []).map(syncedItemKey).filter(Boolean));
   const window = syncWindow(result, now);
   data.tasks = data.tasks.filter((task) => {
+    if (
+      task.external?.provider === "eventkit" &&
+      task.kind === "event" &&
+      eventEndDate(task) < window.eventsStart
+    ) return false;
     if (!isSyncedExternalTaskInScope(task, data, result, window)) return true;
     const key = syncedTaskKey(task);
     if (!key || deletedKeys.has(key)) return true;

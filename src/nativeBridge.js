@@ -60,7 +60,7 @@ function waitForFile(filePath, timeoutMs = 120_000) {
  * Returns a promise that resolves with array of parsed payloads when child exits.
  * Good for one-shot bridges (status, sync).
  */
-function runDirectBinary(binaryPath, args = [], inputPayload = null) {
+function runDirectBinary(binaryPath, args = [], inputPayload = null, timeoutMs = 30_000) {
   return new Promise((resolve, reject) => {
     if (!fs.existsSync(binaryPath)) {
       reject(new Error("找不到原生元件，請重新安裝。"));
@@ -73,22 +73,35 @@ function runDirectBinary(binaryPath, args = [], inputPayload = null) {
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    const timer = timeoutMs > 0 ? setTimeout(() => {
+      try { child.kill("SIGTERM"); } catch {}
+      setTimeout(() => { try { child.kill("SIGKILL"); } catch {} }, 3000);
+      finish(() => reject(new Error("行事曆同步逾時")));
+    }, timeoutMs) : null;
 
     child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
     child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
 
-    child.on("error", reject);
+    child.stdin.on("error", () => {});
+    child.on("error", (error) => finish(() => reject(error)));
     child.on("exit", (code) => {
       if (code !== 0) {
-        reject(new Error(stderr.trim() || `原生元件結束，代碼 ${code}。`));
+        finish(() => reject(new Error(`${stderr.trim() || "原生元件結束"}（代碼 ${code}）`)));
         return;
       }
       try {
         const lines = stdout.trim().split("\n").filter(Boolean);
         const result = JSON.parse(lines.at(-1) || "{}");
-        resolve(result);
+        finish(() => resolve(result));
       } catch (e) {
-        reject(new Error("無法解析原生元件輸出：" + e.message));
+        finish(() => reject(new Error("無法解析原生元件輸出：" + e.message)));
       }
     });
 
