@@ -41,8 +41,12 @@ function localDateKey(date = new Date()) {
 }
 
 function parseDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return null;
   const [year, month, day] = value.split("-").map(Number);
-  return new Date(year, month - 1, day);
+  const date = new Date(year, month - 1, day);
+  return Number.isNaN(date.getTime()) || date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day
+    ? null
+    : date;
 }
 
 function addDays(date, amount) {
@@ -53,6 +57,7 @@ function addDays(date, amount) {
 
 function formatDate(value, options = {}) {
   const date = typeof value === "string" ? parseDate(value) : value;
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "日期格式錯誤";
   return new Intl.DateTimeFormat("zh-TW", options).format(date);
 }
 
@@ -659,13 +664,9 @@ function render() {
     day: "numeric",
     weekday: "long"
   });
-  renderToday();
-  renderTasks();
-  renderWeek();
-  renderMonth();
-  renderJournalHistory();
-  renderSettings();
-  renderUndoToast();
+  for (const renderSection of [renderToday, renderTasks, renderWeek, renderMonth, renderJournalHistory, renderSettings, renderUndoToast]) {
+    try { renderSection(); } catch (error) { console.error("畫面區塊渲染失敗：", error); }
+  }
 }
 
 function openTaskDialog(task = null) {
@@ -1047,6 +1048,7 @@ function wireEvents() {
 }
 
 async function init() {
+  if (!api) throw new Error("assistantAPI 未載入");
   data = await api.getData();
   refreshCalendarStatus(); // 背景重試取得行事曆狀態，徽章就緒後自動更新
   $("#journal-date").value = localDateKey();
@@ -1066,4 +1068,7 @@ async function init() {
   });
 }
 
-init();
+init().catch((error) => {
+  console.error("初始化失敗：", error);
+  document.body.dataset.initError = "true";
+});

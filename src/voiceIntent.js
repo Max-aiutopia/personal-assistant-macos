@@ -29,7 +29,7 @@ const {
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5";
 const DEFAULT_OLLAMA_URL = "http://localhost:11434";
-const ALLOWED_ROUTES = ["today", "tasks", "week", "journal", "settings"];
+const ALLOWED_ROUTES = ["today", "tasks", "week", "month", "journal", "settings"];
 
 const INTENT_TOOL = {
   name: "record_intent",
@@ -175,7 +175,7 @@ function buildOllamaPrompt(data, transcript, now, conversationHistory = []) {
 使用者剛剛說：「${transcript}」
 
 請只用以下 JSON 格式回覆（不要任何多餘文字）：
-{"action":"add|complete|delete|journal|query|navigate|respond_event|reschedule_event|close|none","title":"","date":"YYYY-MM-DD","dates":["YYYY-MM-DD"],"time":"HH:mm","endTime":"HH:mm","offsetMinutes":0,"responseStatus":"accepted|needsAction|tentative|declined","kind":"reminder|event","content":"","route":"today|tasks|week|journal|settings|null","response":"","hide":true}`;
+{"action":"add|complete|delete|journal|query|navigate|respond_event|reschedule_event|close|none","title":"","date":"YYYY-MM-DD","dates":["YYYY-MM-DD"],"time":"HH:mm","endTime":"HH:mm","offsetMinutes":0,"responseStatus":"accepted|needsAction|tentative|declined","kind":"reminder|event","content":"","route":"today|tasks|week|month|journal|settings|null","response":"","hide":true}`;
 }
 
 async function callOllama(data, transcript, settings, now, conversationHistory = [], timeoutMs = 25000) {

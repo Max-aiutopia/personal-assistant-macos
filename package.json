@@ -14,11 +14,11 @@
     "test:voice": "node scripts/voice-command-test.js",
     "test:calendar": "node scripts/calendar-sync-test.js",
     "smoke": "node scripts/smoke-test.js",
-    "package": "npm run build:helpers && electron-packager . 貼身小秘書 --platform=darwin --arch=arm64 --out=dist --overwrite --icon=assets/app-icon.icns --app-bundle-id=com.max.personalglowassistant --extend-info=build/Info.plist --extra-resource=build/VoiceRecognizer.app --extra-resource=build/CalendarBridge.app --ignore='^/dist($|/)' --ignore='^/build/VoiceRecognizer.app($|/)' --ignore='^/build/CalendarBridge.app($|/)'",
+    "package": "npm run build:helpers && electron-packager . 貼身小秘書 --platform=darwin --arch=arm64 --out=dist --overwrite --icon=assets/app-icon.icns --app-bundle-id=com.max.personalglowassistant --extend-info=build/Info.plist --extra-resource=build/VoiceRecognizer.app --extra-resource=build/CalendarBridge.app --ignore='^/dist($|/)' --ignore='^/build/VoiceRecognizer.app($|/)' --ignore='^/build/CalendarBridge.app($|/)' && npm run sign",
     "package:legacy": "npm run package",
     "dist": "npm run build:helpers && electron-builder --mac --arm64",
     "dist:dir": "npm run build:helpers && electron-builder --mac --arm64 --dir",
-    "sign": "codesign --force --deep --sign - 'dist/貼身小秘書-darwin-arm64/貼身小秘書.app'",
+    "sign": "codesign --force --sign \"Glow Secretary Local Signing\" 'dist/貼身小秘書-darwin-arm64/貼身小秘書.app'",
     "notarize": "echo 'Notarization requires Apple Developer account. Set APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (or use @keychain:AC_PASSWORD). For electron-builder, set env vars before npm run dist.' && echo 'See README for full distribution steps.'"
   },
   "devDependencies": {

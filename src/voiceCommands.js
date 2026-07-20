@@ -546,7 +546,7 @@ function rescheduleEvent(data, task, change, now = new Date()) {
     if (!nextStart) return { ok: false, reason: "invalidTime" };
     if (nextTime) {
       if (change?.endTime) nextEnd = parseClockOnDate(change.endDate || nextDate, change.endTime);
-      else nextEnd = new Date(nextStart.getTime() + duration);
+      else if (task.endTime) nextEnd = new Date(nextStart.getTime() + duration);
     }
   }
 
