@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP="$ROOT/build/CalendarBridge.app"
+
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS"
+cp "$ROOT/build/CalendarBridge-Info.plist" "$APP/Contents/Info.plist"
+swiftc "$ROOT/native/CalendarBridge.swift" \
+  -o "$APP/Contents/MacOS/calendar-bridge" \
+  -framework EventKit \
+  -framework AppKit \
+  -Xlinker -sectcreate \
+  -Xlinker __TEXT \
+  -Xlinker __info_plist \
+  -Xlinker "$ROOT/build/CalendarBridge-Info.plist"
+# 用固定憑證簽章（TCC 權限綁憑證，更新不會重置）；找不到憑證才退回臨時簽章
+SIGN_ID="${GLOW_SIGN_ID:-Glow Secretary Local Signing}"
+security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_ID" || SIGN_ID="-"
+codesign --force --deep --sign "$SIGN_ID" --entitlements "$ROOT/build/CalendarBridge.entitlements" "$APP"

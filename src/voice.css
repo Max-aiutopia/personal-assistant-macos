@@ -1,0 +1,335 @@
+:root {
+  color-scheme: light;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang TC",
+    "Noto Sans TC", sans-serif;
+  --ink: #302943;
+  --muted: #8b8499;
+  --lavender: #8263dc;
+  --lavender-dark: #6546bf;
+  --lavender-soft: #eee9fb;
+  --line: rgba(111, 84, 169, 0.14);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 10px;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+}
+
+button {
+  font: inherit;
+}
+
+.voice-card {
+  height: 490px;
+  padding: 19px 21px 15px;
+  overflow: hidden;
+  border: 1px solid rgba(114, 86, 178, 0.2);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 50% 28%, rgba(229, 218, 255, 0.72), transparent 34%),
+    rgba(253, 252, 255, 0.97);
+  box-shadow:
+    0 28px 80px rgba(45, 31, 75, 0.24),
+    0 7px 20px rgba(45, 31, 75, 0.1);
+  color: var(--ink);
+  backdrop-filter: blur(28px);
+}
+
+.voice-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  -webkit-app-region: drag;
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.identity > div {
+  display: grid;
+  gap: 1px;
+}
+
+.identity strong {
+  font-size: 15px;
+}
+
+.identity span:not(.status-dot) {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #bcb5c8;
+  box-shadow: 0 0 0 5px rgba(188, 181, 200, 0.12);
+  transition: 180ms ease;
+}
+
+.voice-card[data-state="listening"] .status-dot {
+  background: #7a5bd2;
+  box-shadow: 0 0 0 5px rgba(122, 91, 210, 0.13);
+  animation: status-pulse 1.15s ease infinite;
+}
+
+.voice-card[data-state="thinking"] .status-dot {
+  background: #e3ad4b;
+  box-shadow: 0 0 0 5px rgba(227, 173, 75, 0.13);
+}
+
+.voice-card[data-state="speaking"] .status-dot {
+  background: #62b58a;
+  box-shadow: 0 0 0 5px rgba(98, 181, 138, 0.13);
+}
+
+@keyframes status-pulse {
+  50% {
+    box-shadow: 0 0 0 9px rgba(122, 91, 210, 0.06);
+  }
+}
+
+.close-button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0 0 2px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(237, 233, 245, 0.8);
+  color: #8c849a;
+  cursor: pointer;
+  font-size: 20px;
+  -webkit-app-region: no-drag;
+}
+
+.voice-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 156px;
+  padding-top: 20px;
+}
+
+.voice-orb {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  padding: 0;
+  border: 0;
+  border-radius: 44% 52% 46% 55%;
+  outline: none;
+  background: linear-gradient(145deg, #af98ef 7%, #7758d1 72%);
+  box-shadow:
+    0 19px 31px rgba(78, 53, 148, 0.26),
+    inset -10px -10px 19px rgba(82, 53, 164, 0.18),
+    inset 10px 10px 20px rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+  transition: 180ms ease;
+}
+
+.voice-orb:hover {
+  transform: translateY(-2px) scale(1.02);
+}
+
+.voice-card[data-state="listening"] .voice-orb {
+  animation: listen-pulse 1.3s ease-in-out infinite;
+}
+
+.voice-card[data-state="thinking"] .voice-orb {
+  animation: thinking 1.4s ease-in-out infinite;
+}
+
+.voice-card[data-state="speaking"] .voice-orb {
+  animation: speaking 650ms ease-in-out infinite alternate;
+}
+
+@keyframes listen-pulse {
+  50% {
+    transform: scale(1.06);
+    box-shadow:
+      0 20px 36px rgba(78, 53, 148, 0.3),
+      0 0 0 12px rgba(130, 99, 220, 0.08);
+  }
+}
+
+@keyframes thinking {
+  50% {
+    transform: rotate(5deg) translateY(-3px);
+  }
+}
+
+@keyframes speaking {
+  to {
+    transform: translateY(-4px) scale(1.02);
+  }
+}
+
+.orb-shine {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  width: 22px;
+  height: 11px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.23);
+  transform: rotate(-25deg);
+}
+
+.orb-eye {
+  position: absolute;
+  top: 40px;
+  width: 7px;
+  height: 11px;
+  border-radius: 50%;
+  background: white;
+}
+
+.orb-eye.left {
+  left: 31px;
+}
+
+.orb-eye.right {
+  right: 29px;
+}
+
+.orb-mouth {
+  position: absolute;
+  left: 40px;
+  top: 59px;
+  width: 18px;
+  height: 9px;
+  border-bottom: 3px solid white;
+  border-radius: 0 0 18px 18px;
+}
+
+.sound-wave {
+  position: absolute;
+  inset: -9px;
+  border: 1px solid rgba(130, 99, 220, 0.2);
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.voice-card[data-state="listening"] .sound-wave {
+  animation: sound-wave 1.8s ease-out infinite;
+}
+
+.voice-card[data-state="listening"] .wave-two {
+  animation-delay: 600ms;
+}
+
+.voice-card[data-state="listening"] .wave-three {
+  animation-delay: 1200ms;
+}
+
+@keyframes sound-wave {
+  from {
+    opacity: 0.5;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.42);
+  }
+}
+
+#prompt {
+  margin: 12px 0 0;
+  color: #6c6080;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.conversation {
+  display: grid;
+  gap: 8px;
+}
+
+.speech-block {
+  min-height: 55px;
+  padding: 10px 13px;
+  border-radius: 14px;
+}
+
+.user-speech {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.assistant-speech {
+  background: var(--lavender-soft);
+}
+
+.speech-label {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--lavender);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.11em;
+}
+
+.speech-block p {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: #544b65;
+  font-size: 12px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 11px;
+}
+
+.examples > span {
+  width: 100%;
+  margin-bottom: 1px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.examples button {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.76);
+  color: #746b82;
+  cursor: pointer;
+  font-size: 9px;
+}
+
+.examples button:hover {
+  border-color: rgba(111, 84, 169, 0.28);
+  color: var(--lavender-dark);
+}
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(111, 84, 169, 0.1);
+  color: #aaa3b3;
+  font-size: 9px;
+}

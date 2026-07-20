@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>小光語音</title>
+    <link rel="stylesheet" href="voice.css" />
+  </head>
+  <body>
+    <main class="voice-card">
+      <header class="voice-header">
+        <div class="identity">
+          <span class="status-dot" id="status-dot"></span>
+          <div>
+            <strong id="assistant-name">小光</strong>
+            <span id="status-label">準備好了</span>
+          </div>
+        </div>
+        <button id="close-button" class="close-button" aria-label="隱藏">×</button>
+      </header>
+
+      <section class="voice-stage">
+        <button id="voice-orb" class="voice-orb" aria-label="開始聆聽">
+          <span class="orb-shine"></span>
+          <span class="orb-eye left"></span>
+          <span class="orb-eye right"></span>
+          <span class="orb-mouth"></span>
+          <span class="sound-wave wave-one"></span>
+          <span class="sound-wave wave-two"></span>
+          <span class="sound-wave wave-three"></span>
+        </button>
+        <p id="prompt">請說，我在聽</p>
+      </section>
+
+      <section class="conversation">
+        <div class="speech-block user-speech">
+          <span class="speech-label">你說</span>
+          <p id="transcript">按一下小光，或直接開始說話</p>
+        </div>
+        <div class="speech-block assistant-speech">
+          <span class="speech-label">小光</span>
+          <p id="response">你可以叫我新增待辦、記錄日誌或查詢行程。</p>
+        </div>
+      </section>
+
+      <section class="examples">
+        <span>可以這樣說</span>
+        <button data-example="提醒我明天下午三點打電話給客戶">明天下午三點提醒我…</button>
+        <button data-example="今天有什麼待辦">今天有什麼待辦？</button>
+        <button data-example="記錄一下今天完成了報告">記錄今天完成的事</button>
+      </section>
+
+      <footer>
+        <span id="shortcut-label">⌥ Space 呼叫</span>
+        <span>Esc 隱藏</span>
+      </footer>
+    </main>
+    <script src="voice.js"></script>
+  </body>
+</html>

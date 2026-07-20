@@ -1,0 +1,82 @@
+{
+  "name": "personal-glow-assistant",
+  "version": "1.3.1",
+  "description": "一個會提醒、記錄並陪伴你的桌面貼身小助理",
+  "main": "src/main.js",
+  "author": "Max",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build:voice": "bash scripts/build-voice-helper.sh",
+    "build:calendar": "bash scripts/build-calendar-helper.sh",
+    "build:helpers": "npm run build:voice && npm run build:calendar",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer.js && node --check src/voice.js && node --check src/voiceCommands.js && node --check src/voiceIntent.js && node --check src/voiceContext.js && node --check src/calendarSync.js && node --check src/eventDates.js && node --check src/utils.js && node --check src/nativeBridge.js && node --check src/aiVoice.js",
+    "test:voice": "node scripts/voice-command-test.js",
+    "test:calendar": "node scripts/calendar-sync-test.js",
+    "smoke": "node scripts/smoke-test.js",
+    "package": "npm run build:helpers && electron-packager . 貼身小秘書 --platform=darwin --arch=arm64 --out=dist --overwrite --icon=assets/app-icon.icns --app-bundle-id=com.max.personalglowassistant --extend-info=build/Info.plist --extra-resource=build/VoiceRecognizer.app --extra-resource=build/CalendarBridge.app --ignore='^/dist($|/)' --ignore='^/build/VoiceRecognizer.app($|/)' --ignore='^/build/CalendarBridge.app($|/)'",
+    "package:legacy": "npm run package",
+    "dist": "npm run build:helpers && electron-builder --mac --arm64",
+    "dist:dir": "npm run build:helpers && electron-builder --mac --arm64 --dir",
+    "sign": "codesign --force --deep --sign - 'dist/貼身小秘書-darwin-arm64/貼身小秘書.app'",
+    "notarize": "echo 'Notarization requires Apple Developer account. Set APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (or use @keychain:AC_PASSWORD). For electron-builder, set env vars before npm run dist.' && echo 'See README for full distribution steps.'"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.0.1",
+    "electron": "^42.4.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.max.personalglowassistant",
+    "productName": "貼身小秘書",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json",
+      "README.md"
+    ],
+    "extraResources": [
+      {
+        "from": "build/VoiceRecognizer.app",
+        "to": "VoiceRecognizer.app"
+      },
+      {
+        "from": "build/CalendarBridge.app",
+        "to": "CalendarBridge.app"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/PersonalAssistant.entitlements",
+      "entitlementsInherit": "build/PersonalAssistant.entitlements",
+      "notarize": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "your-github-username",
+      "repo": "your-repo-name"
+    }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  }
+}

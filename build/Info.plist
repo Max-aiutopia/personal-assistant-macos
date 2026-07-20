@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>貼身小秘書需要使用麥克風，才能聽懂你的語音指令。</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>貼身小秘書需要語音辨識權限，才能把你說的話轉成待辦與記錄。</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>貼身小秘書需要完整存取行事曆，才能將行程同步到 Mac、iPhone 與 Google 行事曆。</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>貼身小秘書需要存取行事曆，才能替你同步與更新行程。</string>
+  <key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+  <string>貼身小秘書需要寫入行事曆，才能替你新增行程。</string>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>貼身小秘書需要存取提醒事項，才能讓待辦在 Mac 與 iPhone 之間同步。</string>
+  <key>NSRemindersUsageDescription</key>
+  <string>貼身小秘書需要存取提醒事項，才能替你同步與完成待辦。</string>
+</dict>
+</plist>

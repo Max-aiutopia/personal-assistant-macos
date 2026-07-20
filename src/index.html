@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>貼身小秘書</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <span class="face-eye left"></span>
+            <span class="face-eye right"></span>
+            <span class="face-smile"></span>
+          </div>
+          <div>
+            <strong id="brand-name">小光</strong>
+            <span>你的貼身小秘書</span>
+          </div>
+        </div>
+
+        <nav id="nav" aria-label="主要功能">
+          <button class="nav-item active" data-route="today">
+            <span class="nav-icon">☀</span><span>今天</span>
+          </button>
+          <button class="nav-item" data-route="tasks">
+            <span class="nav-icon">✓</span><span>待辦事項</span>
+          </button>
+          <button class="nav-item" data-route="week">
+            <span class="nav-icon">▦</span><span>明天與本週</span>
+          </button>
+          <button class="nav-item" data-route="month">
+            <span class="nav-icon">▤</span><span>本月</span>
+          </button>
+          <button class="nav-item" data-route="journal">
+            <span class="nav-icon">✎</span><span>每日記錄</span>
+          </button>
+          <button class="nav-item" data-route="settings">
+            <span class="nav-icon">⚙</span><span>設定</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-quote">
+          <span class="quote-spark">✦</span>
+          <p id="sidebar-message">慢慢來，我會幫你把重要的事記好。</p>
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="today-date"></p>
+            <h1 id="page-title">早安，今天也一起加油</h1>
+          </div>
+          <button class="primary-button" id="quick-add-button">
+            <span>＋</span> 新增事項
+          </button>
+        </header>
+
+        <section class="page active" data-page="today">
+          <div class="hero-card">
+            <div>
+              <p class="hero-kicker">TODAY'S FOCUS</p>
+              <h2 id="hero-title">今天最重要的一件事是什麼？</h2>
+              <p id="hero-copy">先選一件真正重要的事，我會陪你把它完成。</p>
+              <button class="text-button" data-go="tasks">安排今天 →</button>
+            </div>
+            <div class="hero-orb" aria-hidden="true">
+              <span class="orb-shine"></span>
+              <span class="orb-eye left"></span>
+              <span class="orb-eye right"></span>
+              <span class="orb-mouth"></span>
+              <span class="orb-cheek left"></span>
+              <span class="orb-cheek right"></span>
+            </div>
+          </div>
+
+          <div class="stats-grid">
+            <article class="stat-card">
+              <span class="stat-label">今天待辦</span>
+              <strong id="today-task-count">0</strong>
+              <span class="stat-note" id="today-task-note">今天很清爽</span>
+            </article>
+            <article class="stat-card">
+              <span class="stat-label">已經完成</span>
+              <strong id="done-task-count">0</strong>
+              <span class="stat-note" id="done-task-note">從第一件開始吧</span>
+            </article>
+            <article class="stat-card">
+              <span class="stat-label">今日行程</span>
+              <strong id="today-event-count">0</strong>
+              <span class="stat-note">行程過了就歸檔，不算逾期</span>
+            </article>
+          </div>
+
+          <article class="panel schedule-panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">CALENDAR</p>
+                <h3>今天的行程</h3>
+              </div>
+              <button class="icon-button" data-go="week" aria-label="查看本週行程">→</button>
+            </div>
+            <div id="today-event-list" class="task-list compact"></div>
+          </article>
+
+          <div class="two-column">
+            <article class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-kicker">TODAY</p>
+                  <h3>今天的待辦</h3>
+                </div>
+                <button class="icon-button" data-go="tasks" aria-label="查看全部">→</button>
+              </div>
+              <div id="today-task-list" class="task-list compact"></div>
+            </article>
+
+            <article class="panel journal-preview">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-kicker">DAILY NOTE</p>
+                  <h3>今天過得怎麼樣？</h3>
+                </div>
+                <span class="mood-mark">☺</span>
+              </div>
+              <textarea id="today-quick-journal" placeholder="記下一個片刻、一個想法，或今天完成的事情…"></textarea>
+              <div class="journal-actions">
+                <span id="journal-save-status">內容會自動保存</span>
+                <button class="small-button" data-go="journal">完整記錄</button>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="page" data-page="tasks">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">TASKS</p>
+              <h2>把腦中的事情交給我</h2>
+            </div>
+            <div class="segmented" id="task-filter">
+              <button class="active" data-filter="all">全部</button>
+              <button data-filter="overdue">逾期</button>
+              <button data-filter="today">今天</button>
+              <button data-filter="upcoming">之後</button>
+              <button data-filter="done">已完成</button>
+            </div>
+          </div>
+          <div id="overdue-organizer" class="overdue-organizer" hidden>
+            <div>
+              <strong><span id="overdue-count">0</span> 件待辦已逾期</strong>
+              <span>只整理提醒事項，過去的行事曆事件不會出現在這裡。</span>
+            </div>
+            <div>
+              <button class="secondary-button" data-overdue-action="today">全部移到今天</button>
+              <button class="secondary-button" data-overdue-action="tomorrow">全部移到明天</button>
+              <button class="primary-button" data-overdue-action="complete">全部完成</button>
+            </div>
+          </div>
+          <article class="panel task-manager-panel">
+            <div id="all-task-list" class="task-list"></div>
+          </article>
+        </section>
+
+        <section class="page" data-page="week">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">LOOK AHEAD</p>
+              <h2>明天與這一週</h2>
+            </div>
+          </div>
+          <div id="week-board" class="week-board"></div>
+        </section>
+
+        <section class="page" data-page="month">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">THIS MONTH</p>
+              <h2 id="month-title">本月行事曆</h2>
+            </div>
+            <div class="month-controls">
+              <button id="month-prev" class="icon-button" aria-label="上個月">‹</button>
+              <button id="month-today" class="small-button">本月</button>
+              <button id="month-next" class="icon-button" aria-label="下個月">›</button>
+            </div>
+          </div>
+          <div id="month-grid" class="month-grid"></div>
+        </section>
+
+        <section class="page" data-page="journal">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">JOURNAL</p>
+              <h2>每天留下小小的足跡</h2>
+            </div>
+            <input id="journal-date" class="date-input" type="date" />
+          </div>
+          <div class="journal-layout">
+            <article class="panel journal-editor">
+              <label for="journal-done">今天做了什麼？</label>
+              <textarea id="journal-done" placeholder="完成了哪些事、去了哪裡、和誰見面…"></textarea>
+              <label for="journal-feeling">今天的感受或想法</label>
+              <textarea id="journal-feeling" placeholder="值得記得的心情、靈感或反思…"></textarea>
+              <label for="journal-tomorrow">明天想提醒自己的事</label>
+              <textarea id="journal-tomorrow" placeholder="明天最重要的事情、需要帶的東西…"></textarea>
+              <div class="mood-picker" id="mood-picker">
+                <span>今天的心情</span>
+                <button data-mood="great" title="很棒">☀</button>
+                <button data-mood="good" title="不錯">◡</button>
+                <button data-mood="calm" title="平靜">○</button>
+                <button data-mood="tired" title="有點累">◔</button>
+                <button data-mood="hard" title="辛苦了">☂</button>
+              </div>
+              <div class="save-row">
+                <span id="full-journal-status">尚未修改</span>
+                <button id="save-journal-button" class="primary-button">保存今天</button>
+              </div>
+            </article>
+            <aside class="panel history-panel">
+              <p class="panel-kicker">RECENT DAYS</p>
+              <h3>最近的記錄</h3>
+              <div id="journal-history"></div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="page" data-page="settings">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">SETTINGS</p>
+              <h2>讓小助理更懂你</h2>
+            </div>
+          </div>
+          <article class="panel settings-panel">
+            <div class="integration-heading">
+              <div>
+                <p class="panel-kicker">PHONE SYNC</p>
+                <h3>Apple、iCloud 與 Google 同步</h3>
+                <p>透過 macOS 行事曆同步，手機上的 Apple 行事曆、Google Calendar 與提醒事項都能看到。</p>
+              </div>
+              <span id="calendar-connection-badge" class="status-badge">尚未連接</span>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>行事曆事件</h3>
+                <p>「行程／會議」會同步到選定的 iCloud 或 Google 行事曆。</p>
+              </div>
+              <div class="setting-control-stack">
+                <select id="calendar-select" aria-label="選擇行事曆">
+                  <option value="">尚未取得行事曆</option>
+                </select>
+                <label class="inline-switch">
+                  <input id="calendar-sync-toggle" type="checkbox" />
+                  <span>同步行程</span>
+                </label>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>Apple 提醒事項</h3>
+                <p>一般待辦會同步到 iCloud 提醒事項，iPhone 也能勾選完成。</p>
+              </div>
+              <div class="setting-control-stack">
+                <select id="reminder-list-select" aria-label="選擇提醒事項清單">
+                  <option value="">尚未取得提醒事項</option>
+                </select>
+                <label class="inline-switch">
+                  <input id="reminder-sync-toggle" type="checkbox" />
+                  <span>同步待辦</span>
+                </label>
+              </div>
+            </div>
+            <div class="integration-actions">
+              <span id="calendar-sync-status">連接後即可在手機查看。</span>
+              <div>
+                <button id="open-accounts-button" class="secondary-button">加入 Google 帳號</button>
+                <button id="connect-calendar-button" class="secondary-button">連接行事曆</button>
+                <button id="sync-calendar-button" class="primary-button">立即同步</button>
+              </div>
+            </div>
+            <div class="sync-health">
+              <div class="sync-health-heading">
+                <div>
+                  <p class="panel-kicker">SYNC HEALTH</p>
+                  <h3>同步健康狀態</h3>
+                </div>
+                <span>行程與待辦分開檢查</span>
+              </div>
+              <div id="sync-health-grid" class="sync-health-grid"></div>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>你希望我怎麼稱呼你？</h3>
+                <p>這個名字會出現在每日問候中。</p>
+              </div>
+              <input id="user-name-input" type="text" placeholder="輸入你的名字" maxlength="20" />
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>替小助理取名字</h3>
+                <p>目前的名字是小光。</p>
+              </div>
+              <input id="assistant-name-input" type="text" placeholder="小光" maxlength="12" />
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>每天早安提醒</h3>
+                <p>到了指定時間，我會整理今天尚未完成的事項。</p>
+              </div>
+              <input id="brief-time-input" type="time" />
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>系統通知</h3>
+                <p>待辦到時間時顯示 macOS 通知。</p>
+              </div>
+              <label class="switch">
+                <input id="notifications-toggle" type="checkbox" />
+                <span></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>登入後自動啟動</h3>
+                <p>登入後在背景待命，不會自動顯示視窗。</p>
+              </div>
+              <label class="switch">
+                <input id="launch-toggle" type="checkbox" />
+                <span></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>呼叫時自動聆聽</h3>
+                <p>按下 ⌥ Space 後立即開啟麥克風，不必再按按鈕。</p>
+              </div>
+              <label class="switch">
+                <input id="voice-auto-listen-toggle" type="checkbox" />
+                <span></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>用聲音回答</h3>
+                <p>小光除了顯示文字，也會用系統語音回答你。</p>
+              </div>
+              <label class="switch">
+                <input id="voice-reply-toggle" type="checkbox" />
+                <span></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>完成後自動隱藏</h3>
+                <p>語音互動結束後自動收起，不遮擋工作畫面。</p>
+              </div>
+              <label class="switch">
+                <input id="voice-auto-hide-toggle" type="checkbox" />
+                <span></span>
+              </label>
+            </div>
+            <div class="integration-heading">
+              <div>
+                <p class="panel-kicker">VOICE BRAIN</p>
+                <h3>語音理解大腦</h3>
+                <p>決定小光聽懂你說話的聰明程度。規則式可離線使用；Claude 最聰明（雲端、需金鑰）。</p>
+              </div>
+              <span id="voice-brain-badge" class="status-badge">規則式</span>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>理解方式</h3>
+                <p>規則式＝離線關鍵字；Ollama＝本地模型；Claude＝雲端最聰明。</p>
+              </div>
+              <select id="voice-brain-select" aria-label="選擇語音理解方式">
+                <option value="rules">規則式（離線、最省）</option>
+                <option value="ollama">Ollama 本地模型</option>
+                <option value="claude">Claude API（雲端，最聰明）</option>
+              </select>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>Claude API 金鑰</h3>
+                <p id="claude-key-status">尚未設定。貼上 sk-ant- 開頭的金鑰後按儲存（會用 Keychain 加密）。</p>
+              </div>
+              <div class="setting-control-stack">
+                <input id="claude-key-input" type="password" style="width: 240px;" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
+                <button id="save-claude-key-button" class="secondary-button">儲存金鑰</button>
+              </div>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>Claude 模型</h3>
+                <p>預設 claude-haiku-4-5（最快最省）。</p>
+              </div>
+              <input id="claude-model-input" type="text" style="width: 200px;" placeholder="claude-haiku-4-5" />
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>語音隱私模式</h3>
+                <p>開啟後語音改用裝置端辨識（不上網、較私密，但中文準確度較低）。</p>
+              </div>
+              <label class="switch">
+                <input id="voice-privacy-toggle" type="checkbox" />
+                <span></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>Ollama 模型</h3>
+                <p>選 Ollama 時使用，建議 qwen2.5:3b 或 gemma2:2b。</p>
+              </div>
+              <input id="ai-model-input" type="text" style="width: 180px;" placeholder="qwen2.5:3b" />
+            </div>
+            <div class="setting-row">
+              <div>
+                <h3>Ollama 伺服器</h3>
+                <p>預設 http://localhost:11434</p>
+              </div>
+              <input id="ollama-url-input" type="text" style="width: 220px;" placeholder="http://localhost:11434" />
+            </div>
+            <div class="settings-actions">
+              <button id="test-voice-button" class="secondary-button">測試語音</button>
+              <button id="test-notification-button" class="secondary-button">測試通知</button>
+              <button id="test-claude-button" class="secondary-button">測試 Claude</button>
+              <button id="test-ai-button" class="secondary-button">測試 Ollama</button>
+              <button id="show-data-button" class="secondary-button">查看資料檔案</button>
+              <button id="save-settings-button" class="primary-button">儲存設定</button>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="task-dialog">
+      <form id="task-form" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p class="panel-kicker">NEW TASK</p>
+            <h2 id="dialog-title">新增事項</h2>
+          </div>
+          <button type="button" class="close-button" id="close-dialog" aria-label="關閉">×</button>
+        </div>
+        <input type="hidden" id="task-id" />
+        <label>
+          事項內容
+          <input id="task-title" type="text" placeholder="例如：回覆客戶訊息" required maxlength="100" />
+        </label>
+        <div class="form-grid">
+          <label>
+            類型
+            <select id="task-kind">
+              <option value="reminder">待辦／提醒事項</option>
+              <option value="event">行程／會議</option>
+            </select>
+          </label>
+          <label>
+            分類
+            <select id="task-category">
+              <option value="工作">工作</option>
+              <option value="生活">生活</option>
+              <option value="健康">健康</option>
+              <option value="家人">家人</option>
+              <option value="其他">其他</option>
+            </select>
+          </label>
+        </div>
+        <div class="form-grid">
+          <label>
+            日期
+            <input id="task-date" type="date" required />
+          </label>
+          <label>
+            <span id="task-time-label">提醒時間</span>
+            <input id="task-time" type="time" />
+          </label>
+        </div>
+        <label id="task-end-time-row" hidden>
+          結束時間
+          <input id="task-end-time" type="time" />
+          <span id="task-end-date-hint" class="field-hint" hidden></span>
+        </label>
+        <label>
+          備註
+          <textarea id="task-notes" placeholder="補充需要準備的內容…" maxlength="300"></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" class="danger-button" id="delete-task-button" hidden>刪除</button>
+          <div class="dialog-action-group">
+            <button type="button" class="secondary-button" id="cancel-dialog">取消</button>
+            <button type="submit" class="primary-button">保存事項</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="undo-toast" class="undo-toast" role="status" hidden>
+      <span id="undo-message">已刪除</span>
+      <button id="undo-delete-button">復原</button>
+      <span id="undo-countdown">10</span>
+    </div>
+
+    <script src="eventDates.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>
