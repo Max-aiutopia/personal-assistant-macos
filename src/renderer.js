@@ -32,6 +32,7 @@ let dayDialogReturnFocus = null;
 let agendaDate = "";
 let searchResultIds = [];
 let searchActiveIndex = -1;
+let monthActiveDate = "";
 const SETTINGS_SECTIONS = ["general", "sync", "voice", "advanced"];
 let activeSettingsSection = "general";
 let settingsDirty = false;
@@ -165,6 +166,13 @@ function valuesEqual(left, right) {
 }
 
 function replayArrayDelta(baseItems = [], intendedItems = [], latestItems = []) {
+  if (typeof dateUtils.mergeArrayDelta === "function") {
+    const result = dateUtils.mergeArrayDelta(baseItems, intendedItems, latestItems);
+    if (result.conflicts.length) {
+      throw new Error("同一事項同時被其他操作更新，請確認後再試一次。");
+    }
+    return result.items;
+  }
   const baseById = new Map(baseItems.filter((item) => item?.id).map((item) => [item.id, item]));
   const intendedById = new Map(intendedItems.filter((item) => item?.id).map((item) => [item.id, item]));
   const deletedIds = new Set(
@@ -575,6 +583,7 @@ function navigate(route, { focusHeading = false } = {}) {
     void flushJournalAutosave();
   }
   activeRoute = route;
+  api?.setActiveRoute?.(route);
   $$(".nav-item").forEach((button) => {
     const isActive = button.dataset.route === route;
     button.classList.toggle("active", isActive);
@@ -803,6 +812,17 @@ function searchResultMarkup(task, index) {
   `;
 }
 
+function updateSearchComboboxState({ expanded = searchResultIds.length > 0 } = {}) {
+  const input = $("#global-search-input");
+  if (!input) return;
+  input.setAttribute("aria-expanded", String(Boolean(expanded)));
+  if (expanded && searchActiveIndex >= 0 && searchResultIds[searchActiveIndex]) {
+    input.setAttribute("aria-activedescendant", `search-result-${searchActiveIndex}`);
+  } else {
+    input.removeAttribute("aria-activedescendant");
+  }
+}
+
 function renderGlobalSearch() {
   const query = normalizedSearchText($("#global-search-input")?.value);
   const summary = $("#global-search-summary");
@@ -818,6 +838,7 @@ function renderGlobalSearch() {
         <p>例如輸入「家教」、「7/30」、「健康」或備註裡的文字。</p>
       </div>
     `;
+    updateSearchComboboxState({ expanded: false });
     return;
   }
 
@@ -836,7 +857,7 @@ function renderGlobalSearch() {
     .map((item) => item.task);
 
   searchResultIds = matches.map((task) => task.id);
-  searchActiveIndex = matches.length ? 0 : -1;
+  searchActiveIndex = -1;
   summary.textContent = matches.length
     ? `找到 ${matches.length} 項${matches.length === 60 ? "（先顯示最相關的 60 項）" : ""}`
     : `找不到「${$("#global-search-input").value.trim()}」`;
@@ -849,10 +870,15 @@ function renderGlobalSearch() {
         <p>試試較短的名稱、日期或分類。</p>
       </div>
     `;
+  updateSearchComboboxState({ expanded: matches.length > 0 });
 }
 
 function setSearchActiveIndex(index, { focus = false } = {}) {
-  if (!searchResultIds.length) return;
+  if (!searchResultIds.length) {
+    searchActiveIndex = -1;
+    updateSearchComboboxState({ expanded: false });
+    return;
+  }
   searchActiveIndex = Math.max(0, Math.min(index, searchResultIds.length - 1));
   $$(".search-result", $("#global-search-results")).forEach((button, buttonIndex) => {
     const isActive = buttonIndex === searchActiveIndex;
@@ -860,6 +886,7 @@ function setSearchActiveIndex(index, { focus = false } = {}) {
     button.setAttribute("aria-selected", String(isActive));
   });
   const active = $(`#search-result-${searchActiveIndex}`);
+  updateSearchComboboxState({ expanded: true });
   active?.scrollIntoView({ block: "nearest" });
   if (focus) active?.focus({ preventScroll: true });
 }
@@ -895,11 +922,18 @@ function renderToday() {
   const todayEvents = sortedTasks(data.tasks.filter((task) => eventOccursOnDate(task, today)));
   const openTasks = todayTasks.filter((task) => !task.completed);
   const doneTasks = todayTasks.filter((task) => task.completed);
+  const overdueTasks = sortedTasks(
+    data.tasks.filter((task) => isReminder(task) && !task.completed && task.date < today)
+  );
 
   $("#today-task-count").textContent = openTasks.length;
   $("#done-task-count").textContent = doneTasks.length;
   $("#today-event-count").textContent = todayEvents.length;
-  $("#today-task-note").textContent = openTasks.length ? `還有 ${openTasks.length} 件，照順序慢慢來` : "今天很清爽";
+  $("#today-task-note").textContent = openTasks.length
+    ? `還有 ${openTasks.length} 件${overdueTasks.length ? `，另有 ${overdueTasks.length} 件逾期` : "，照順序慢慢來"}`
+    : overdueTasks.length
+      ? `今天尚未安排，另有 ${overdueTasks.length} 件逾期待整理`
+      : "今天很清爽";
   $("#done-task-note").textContent = doneTasks.length ? `你已經完成 ${doneTasks.length} 件了` : "從第一件開始吧";
   $("#today-task-list").innerHTML = todayTasks.length
     ? todayTasks.slice(0, 5).map(taskRow).join("")
@@ -915,10 +949,24 @@ function renderToday() {
     : emptyState(data.settings.calendarSyncEnabled ? "今天沒有行程" : "行事曆同步已關閉，請到設定開啟");
 
   const focusTask = openTasks[0];
-  $("#hero-title").textContent = focusTask ? focusTask.title : "今天最重要的一件事是什麼？";
-  $("#hero-copy").textContent = focusTask
-    ? `${focusTask.reminderTime ? `${focusTask.reminderTime} 提醒你。` : "我已經替你記好了。"} 完成後記得回來打勾。`
-    : "先選一件真正重要的事，我會陪你把它完成。";
+  const heroAction = $("#hero-action");
+  if (focusTask) {
+    $("#hero-title").textContent = focusTask.title;
+    $("#hero-copy").textContent = `${focusTask.reminderTime ? `${focusTask.reminderTime} 提醒你。` : "我已經替你記好了。"} 完成後記得回來打勾。`;
+    heroAction.textContent = "查看今天待辦 →";
+    heroAction.dataset.taskFilter = "today";
+  } else if (overdueTasks.length) {
+    const oldest = overdueTasks[0];
+    $("#hero-title").textContent = `${overdueTasks.length} 件待辦需要重新安排`;
+    $("#hero-copy").textContent = `最早是「${oldest.title}」。先決定今天做、明天做，或標示完成。`;
+    heroAction.textContent = "整理逾期事項 →";
+    heroAction.dataset.taskFilter = "overdue";
+  } else {
+    $("#hero-title").textContent = "今天最重要的一件事是什麼？";
+    $("#hero-copy").textContent = "先選一件真正重要的事，我會陪你把它完成。";
+    heroAction.textContent = "安排今天 →";
+    heroAction.dataset.taskFilter = "open";
+  }
 
   const quickEntry = data.journal[today] || {};
   if (document.activeElement !== $("#today-quick-journal")) {
@@ -981,6 +1029,17 @@ function renderTasks() {
     $("#all-task-list").innerHTML = tasks.length ? tasks.map(taskRow).join("") : emptyState("這裡目前沒有事項");
   }
   restoreTaskFocus($("#all-task-list"), focusKey);
+}
+
+function activateTaskFilter(filter, { renderPage = false } = {}) {
+  const allowed = ["open", "overdue", "today", "upcoming", "done"];
+  taskFilter = allowed.includes(filter) ? filter : "open";
+  $$("#task-filter button").forEach((item) => {
+    const isActive = item.dataset.filter === taskFilter;
+    item.classList.toggle("active", isActive);
+    item.setAttribute("aria-pressed", String(isActive));
+  });
+  if (renderPage && activeRoute === "tasks") renderTasks();
 }
 
 function renderWeek() {
@@ -1049,9 +1108,26 @@ function sortedMonthItems(items, displayDate) {
   });
 }
 
+function monthDateButtons(grid = $("#month-grid")) {
+  return grid ? $$("[data-month-date]", grid) : [];
+}
+
+function setMonthActiveDate(date, { focus = false } = {}) {
+  const buttons = monthDateButtons();
+  const target = buttons.find((button) => button.dataset.monthDate === date);
+  if (!target) return null;
+  monthActiveDate = date;
+  buttons.forEach((button) => {
+    button.tabIndex = button === target ? 0 : -1;
+  });
+  if (focus) target.focus({ preventScroll: true });
+  return target;
+}
+
 function renderMonth() {
   const grid = $("#month-grid");
   if (!grid) return;
+  const hadMonthDateFocus = Boolean(document.activeElement?.closest?.("[data-month-date]"));
   const year = monthCursor.getFullYear();
   const month = monthCursor.getMonth();
   const titleEl = $("#month-title");
@@ -1062,6 +1138,12 @@ function renderMonth() {
   const todayKey = localDateKey();
   const startKey = localDateKey(new Date(year, month, 1));
   const endKey = localDateKey(new Date(year, month, daysInMonth));
+  const activeDate = monthActiveDate >= startKey && monthActiveDate <= endKey
+    ? monthActiveDate
+    : todayKey >= startKey && todayKey <= endKey
+      ? todayKey
+      : startKey;
+  monthActiveDate = activeDate;
   const dateIndex = dateUtils.buildDateItemIndex
     ? dateUtils.buildDateItemIndex(data.tasks, startKey, endKey)
     : {};
@@ -1073,7 +1155,7 @@ function renderMonth() {
   let foldedOccurrenceCount = 0;
 
   const weekdays = ["日", "一", "二", "三", "四", "五", "六"]
-    .map((w) => `<div class="month-weekday" aria-hidden="true">${w}</div>`)
+    .map((w) => `<div class="month-weekday" role="columnheader">${w}</div>`)
     .join("");
 
   const cells = [];
@@ -1107,6 +1189,7 @@ function renderMonth() {
             type="button"
             class="month-chip ${isEvent(task) ? "event" : "reminder"} ${task.completed ? "done" : ""}"
             data-task-id="${task.id}"
+            tabindex="-1"
             title="${escapeHtml(task.title)}"
             aria-label="編輯「${escapeHtml(task.title)}」，${escapeHtml(formatDate(key, { month: "long", day: "numeric" }))}"
           >
@@ -1122,14 +1205,14 @@ function renderMonth() {
       .join("");
     const more =
       priorityItems.length > 4
-        ? `<button type="button" class="month-more" data-day-agenda="${key}" aria-label="查看${escapeHtml(formatDate(key, { month: "long", day: "numeric" }))}全部 ${dayItems.length} 項安排">其餘 ${priorityItems.length - 4} 項</button>`
+        ? `<button type="button" class="month-more" data-day-agenda="${key}" tabindex="-1" aria-label="查看${escapeHtml(formatDate(key, { month: "long", day: "numeric" }))}全部 ${dayItems.length} 項安排">其餘 ${priorityItems.length - 4} 項</button>`
         : "";
     const routineTitles = [...new Set(routineItems.map((task) => task.title).filter(Boolean))];
     const routineLabel = routineTitles.length === 1
       ? `固定 · ${routineTitles[0]}${routineItems.length > 1 ? ` ×${routineItems.length}` : ""}`
       : `固定安排 ${routineItems.length} 項`;
     const routineTrack = routineItems.length
-      ? `<button type="button" class="month-routine-track" data-day-agenda="${key}" aria-label="查看${escapeHtml(formatDate(key, { month: "long", day: "numeric" }))}${routineItems.length}筆固定安排">${escapeHtml(routineLabel)}</button>`
+      ? `<button type="button" class="month-routine-track" data-day-agenda="${key}" tabindex="-1" aria-label="查看${escapeHtml(formatDate(key, { month: "long", day: "numeric" }))}${routineItems.length}筆固定安排">${escapeHtml(routineLabel)}</button>`
       : "";
     const dateLabel = escapeHtml(formatDate(key, {
       month: "long",
@@ -1137,18 +1220,27 @@ function renderMonth() {
       weekday: "long"
     }));
     cells.push(`
-      <div class="month-cell ${key === todayKey ? "today" : ""}" aria-label="${dateLabel}">
+      <div
+        class="month-cell ${key === todayKey ? "today" : ""}"
+        role="gridcell"
+        aria-label="${dateLabel}"
+        aria-colindex="${date.getDay() + 1}"
+      >
         <div class="month-day-header">
           <button
             type="button"
             class="month-daynum"
             data-day-agenda="${key}"
+            data-month-date="${key}"
+            data-month-column="${date.getDay()}"
+            tabindex="${key === activeDate ? "0" : "-1"}"
             aria-label="查看${dateLabel}全部安排"
           >${day}</button>
           <button
             type="button"
             class="month-day-add"
             data-month-add-date="${key}"
+            tabindex="-1"
             aria-label="${dateLabel}，新增事項"
           >＋</button>
         </div>
@@ -1157,7 +1249,18 @@ function renderMonth() {
     `);
   }
 
-  grid.innerHTML = `<div class="month-weekdays">${weekdays}</div><div class="month-days">${cells.join("")}</div>`;
+  const weeks = [];
+  for (let index = 0; index < cells.length; index += 7) {
+    weeks.push(`<div class="month-week" role="row">${cells.slice(index, index + 7).join("")}</div>`);
+  }
+  grid.innerHTML = `
+    <div class="month-weekdays" role="row">${weekdays}</div>
+    <div class="month-days" role="rowgroup">${weeks.join("")}</div>
+  `;
+  grid.setAttribute("aria-label", `${year}年${month + 1}月行事曆`);
+  if (hadMonthDateFocus) {
+    requestAnimationFrame(() => setMonthActiveDate(activeDate, { focus: true }));
+  }
   $$("#month-view-mode [data-month-view]").forEach((button) => {
     button.setAttribute("aria-pressed", String(button.dataset.monthView === monthViewMode));
   });
@@ -1174,6 +1277,7 @@ function renderMonth() {
 function handleMonthClick(event) {
   const agendaButton = event.target.closest("[data-day-agenda]");
   if (agendaButton) {
+    if (agendaButton.dataset.monthDate) setMonthActiveDate(agendaButton.dataset.monthDate);
     openDayDialog(agendaButton.dataset.dayAgenda);
     return;
   }
@@ -1187,6 +1291,40 @@ function handleMonthClick(event) {
   if (addButton) {
     openTaskDialog({ date: addButton.dataset.monthAddDate });
   }
+}
+
+function handleMonthKeydown(event) {
+  const current = event.target.closest("[data-month-date]");
+  if (!current) return;
+  const buttons = monthDateButtons();
+  const currentIndex = buttons.indexOf(current);
+  if (currentIndex < 0) return;
+
+  if (["Enter", " ", "Spacebar"].includes(event.key)) {
+    event.preventDefault();
+    setMonthActiveDate(current.dataset.monthDate);
+    openDayDialog(current.dataset.monthDate);
+    return;
+  }
+
+  let nextIndex = currentIndex;
+  if (event.key === "ArrowRight") nextIndex = Math.min(buttons.length - 1, currentIndex + 1);
+  else if (event.key === "ArrowLeft") nextIndex = Math.max(0, currentIndex - 1);
+  else if (event.key === "ArrowDown") nextIndex = Math.min(buttons.length - 1, currentIndex + 7);
+  else if (event.key === "ArrowUp") nextIndex = Math.max(0, currentIndex - 7);
+  else if (event.key === "Home") {
+    nextIndex = Math.max(0, currentIndex - Number(current.dataset.monthColumn || 0));
+  } else if (event.key === "End") {
+    nextIndex = Math.min(
+      buttons.length - 1,
+      currentIndex + (6 - Number(current.dataset.monthColumn || 0))
+    );
+  } else {
+    return;
+  }
+
+  event.preventDefault();
+  setMonthActiveDate(buttons[nextIndex].dataset.monthDate, { focus: true });
 }
 
 function renderDayDialog() {
@@ -1672,31 +1810,117 @@ function openTaskDialog(task = null, returnFocus = document.activeElement) {
   $("#task-time").value = task?.reminderTime || "";
   $("#task-end-time").value = task?.endTime || "";
   $("#task-kind").value = task?.kind || "reminder";
+  const isEventKind = task?.kind === "event";
+  const inferredAllDay = Boolean(
+    isEventKind && (task?.isAllDay || (!task?.reminderTime && !task?.endTime))
+  );
+  $("#task-all-day").checked = inferredAllDay;
+  $("#task-end-date").value = isEventKind
+    ? task?.endDate ||
+      (
+        task?.reminderTime &&
+        task?.endTime &&
+        task.endTime <= task.reminderTime
+          ? addDateDays(task.date, 1)
+          : task?.date
+      ) ||
+      localDateKey()
+    : task?.date || localDateKey();
   $("#task-category").value = task?.category || "工作";
   $("#task-notes").value = task?.notes || "";
   $("#delete-task-button").hidden = !task?.id;
   $("#task-dialog").showModal();
-  syncTaskKindFields();
+  syncTaskKindFields({ autoAdvance: false });
   setTimeout(() => $("#task-title").focus(), 50);
 }
 
-// 依「類型」切換時間欄位：行程＝開始時間＋結束時間；待辦＝提醒時間（無結束時間）
-function syncTaskKindFields() {
-  const isEventKind = $("#task-kind").value === "event";
-  $("#task-time-label").textContent = isEventKind ? "開始時間" : "提醒時間";
-  $("#task-end-time-row").hidden = !isEventKind;
-  updateEndDateHint();
+function calendarDaySpan(startValue, endValue) {
+  const start = parseDate(startValue);
+  const end = parseDate(endValue);
+  if (!start || !end) return 0;
+  const startUtc = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
+  const endUtc = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
+  return Math.round((endUtc - startUtc) / 86_400_000);
 }
 
-function updateEndDateHint() {
-  const hint = $("#task-end-date-hint");
-  if (!hint) return;
+// 依「類型」切換排程欄位，明確保留跨日與全天語意。
+function syncTaskKindFields({ autoAdvance = true } = {}) {
   const isEventKind = $("#task-kind").value === "event";
+  const allDay = isEventKind && $("#task-all-day").checked;
+  const startDate = $("#task-date").value;
+  const endDateInput = $("#task-end-date");
+  const startTimeInput = $("#task-time");
+  const endTimeInput = $("#task-end-time");
+  const eventSchedule = $("#task-event-schedule");
+  const startTimeRow = $("#task-start-time-row");
+  const endTimeRow = $("#task-end-time-row");
+
+  $("#task-date-label").textContent = isEventKind ? "開始日期" : "日期";
+  $("#task-time-label").textContent = isEventKind ? "開始時間" : "提醒時間";
+  eventSchedule.hidden = !isEventKind;
+  startTimeRow.hidden = allDay;
+  endTimeRow.hidden = !isEventKind || allDay;
+  endDateInput.required = isEventKind;
+  startTimeInput.required = isEventKind && !allDay;
+  endTimeInput.required = isEventKind && !allDay;
+  endDateInput.min = startDate || "";
+
+  if (isEventKind && startDate) {
+    if (!endDateInput.value || endDateInput.value < startDate) {
+      endDateInput.value = startDate;
+    }
+    if (
+      autoAdvance &&
+      !allDay &&
+      startTimeInput.value &&
+      endTimeInput.value &&
+      endDateInput.value === startDate &&
+      endTimeInput.value <= startTimeInput.value
+    ) {
+      endDateInput.value = addDateDays(startDate, 1);
+    }
+  }
+  updateTaskScheduleHint();
+}
+
+function updateTaskScheduleHint() {
+  const hint = $("#task-schedule-hint");
+  const detail = $("#task-end-date-hint");
+  if (!hint || !detail) return;
+  const isEventKind = $("#task-kind").value === "event";
+  const allDay = isEventKind && $("#task-all-day").checked;
+  const startDate = $("#task-date").value;
+  const endDate = $("#task-end-date").value;
   const start = $("#task-time").value;
   const end = $("#task-end-time").value;
-  const crossesMidnight = Boolean(isEventKind && start && end && end <= start);
-  hint.textContent = crossesMidnight ? "結束時間會視為隔天" : "";
-  hint.hidden = !crossesMidnight;
+  detail.hidden = true;
+  detail.textContent = "";
+
+  if (!isEventKind) {
+    hint.textContent = "待辦會在指定日期與時間提醒你。";
+    return;
+  }
+  if (!startDate || !endDate) {
+    hint.textContent = "請選擇開始與結束日期。";
+    return;
+  }
+
+  const daySpan = Math.max(0, calendarDaySpan(startDate, endDate));
+  if (allDay) {
+    hint.textContent = daySpan
+      ? `這是 ${daySpan + 1} 天的全天行程；結束日期包含 ${formatDate(endDate, { month: "numeric", day: "numeric" })}。`
+      : "這是全天行程；結束日期包含當天。";
+    return;
+  }
+  if (!start || !end) {
+    hint.textContent = "請填寫開始與結束時間，或切換為全天。";
+    return;
+  }
+  if (daySpan > 0) {
+    hint.textContent = `跨日行程，將在 ${formatDate(endDate, { month: "numeric", day: "numeric" })} ${end} 結束。`;
+    return;
+  }
+  hint.textContent = `${start}–${end}，同一天完成。`;
 }
 
 function loadJournalEditor(date) {
@@ -1825,24 +2049,30 @@ function wireEvents() {
     const button = event.target.closest("[data-route]");
     if (button) navigate(button.dataset.route, { focusHeading: event.detail === 0 });
   });
-  $$("[data-go]").forEach((button) => on(button, "click", () => navigate(button.dataset.go)));
+  $$("[data-go]").forEach((button) => on(button, "click", (event) => {
+    if (button.dataset.taskFilter) activateTaskFilter(button.dataset.taskFilter);
+    navigate(button.dataset.go, { focusHeading: event.detail === 0 });
+  }));
   on("#quick-add-button", "click", () => openTaskDialog());
   on("#global-search-button", "click", openGlobalSearch);
   on("#close-search-dialog", "click", () => $("#search-dialog")?.close());
   on("#close-day-dialog", "click", () => $("#day-dialog")?.close());
   on("#close-dialog", "click", () => $("#task-dialog")?.close());
   on("#cancel-dialog", "click", () => $("#task-dialog")?.close());
-  on("#search-dialog", "close", () => restoreDialogFocus(searchDialogReturnFocus));
+  on("#search-dialog", "close", () => {
+    updateSearchComboboxState({ expanded: false });
+    restoreDialogFocus(searchDialogReturnFocus);
+  });
   on("#day-dialog", "close", () => restoreDialogFocus(dayDialogReturnFocus));
   on("#task-dialog", "close", () => restoreDialogFocus(taskDialogReturnFocus));
   on("#global-search-input", "input", renderGlobalSearch);
   on("#global-search-input", "keydown", (event) => {
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setSearchActiveIndex(searchActiveIndex < 0 ? 0 : searchActiveIndex + 1, { focus: true });
+      setSearchActiveIndex(searchActiveIndex < 0 ? 0 : searchActiveIndex + 1);
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setSearchActiveIndex(searchActiveIndex <= 0 ? searchResultIds.length - 1 : searchActiveIndex - 1, { focus: true });
+      setSearchActiveIndex(searchActiveIndex <= 0 ? searchResultIds.length - 1 : searchActiveIndex - 1);
     } else if (event.key === "Enter" && searchActiveIndex >= 0) {
       event.preventDefault();
       openTaskFromSearch(searchResultIds[searchActiveIndex]);
@@ -1923,14 +2153,42 @@ function wireEvents() {
     event.preventDefault();
     const id = $("#task-id").value;
     const existing = data.tasks.find((task) => task.id === id);
+    syncTaskKindFields();
+    const kind = $("#task-kind").value;
+    const isEventKind = kind === "event";
+    const isAllDay = isEventKind && $("#task-all-day").checked;
+    const startDate = $("#task-date").value;
+    const endDate = isEventKind ? ($("#task-end-date").value || startDate) : startDate;
+    const startTime = isAllDay ? "" : $("#task-time").value;
+    const endTime = isEventKind && !isAllDay ? $("#task-end-time").value : "";
+    const status = $("#task-dialog-status");
+    const rejectSchedule = (message, target) => {
+      status.textContent = message;
+      status.hidden = false;
+      target?.focus();
+    };
+    if (!startDate || (isEventKind && (!endDate || endDate < startDate))) {
+      rejectSchedule("結束日期不能早於開始日期。", $("#task-end-date"));
+      return;
+    }
+    if (isEventKind && !isAllDay && (!startTime || !endTime)) {
+      rejectSchedule("請填寫開始與結束時間，或切換為全天。", !startTime ? $("#task-time") : $("#task-end-time"));
+      return;
+    }
+    if (isEventKind && !isAllDay && endDate === startDate && endTime <= startTime) {
+      rejectSchedule("結束時間必須晚於開始時間；跨午夜請將結束日期設為隔天。", $("#task-end-date"));
+      return;
+    }
     const snapshot = cloneData(data);
     const task = {
       id: id || uid(),
       title: $("#task-title").value.trim(),
-      date: $("#task-date").value,
-      reminderTime: $("#task-time").value,
-      endTime: $("#task-kind").value === "event" ? $("#task-end-time").value : "",
-      kind: $("#task-kind").value,
+      date: startDate,
+      reminderTime: startTime,
+      endDate,
+      endTime,
+      isAllDay,
+      kind,
       category: $("#task-category").value,
       notes: $("#task-notes").value.trim(),
       completed: existing?.completed || false,
@@ -1940,13 +2198,6 @@ function wireEvents() {
       origin: existing ? existing.origin : "manual",
       external: existing?.external
     };
-    task.endDate =
-      task.kind === "event" &&
-      task.reminderTime &&
-      task.endTime &&
-      task.endTime <= task.reminderTime
-        ? addDateDays(task.date, 1)
-        : task.date;
     if (!task.title || !task.date) return;
     const form = $("#task-form");
     const submitButton = form.querySelector('[type="submit"]');
@@ -1977,6 +2228,7 @@ function wireEvents() {
   on("#all-task-list", "click", handleTaskAction);
   on("#week-board", "click", handleTaskAction);
   on("#month-grid", "click", handleMonthClick);
+  on("#month-grid", "keydown", handleMonthKeydown);
   on("#month-view-mode", "click", (event) => {
     const button = event.target.closest("[data-month-view]");
     if (!button || !["focus", "all"].includes(button.dataset.monthView)) return;
@@ -1995,21 +2247,16 @@ function wireEvents() {
     monthCursor = new Date();
     renderMonth();
   });
-  on("#task-kind", "change", syncTaskKindFields);
-  ["#task-date", "#task-time", "#task-end-time"].forEach((selector) => {
-    on(selector, "input", updateEndDateHint);
+  on("#task-kind", "change", () => syncTaskKindFields());
+  on("#task-all-day", "change", () => syncTaskKindFields({ autoAdvance: false }));
+  ["#task-date", "#task-time", "#task-end-date", "#task-end-time"].forEach((selector) => {
+    on(selector, "input", () => syncTaskKindFields());
   });
 
   on("#task-filter", "click", (event) => {
     const button = event.target.closest("[data-filter]");
     if (!button) return;
-    taskFilter = button.dataset.filter;
-    $$("#task-filter button").forEach((item) => {
-      const isActive = item === button;
-      item.classList.toggle("active", isActive);
-      item.setAttribute("aria-pressed", String(isActive));
-    });
-    renderTasks();
+    activateTaskFilter(button.dataset.filter, { renderPage: true });
   });
   on("#overdue-organizer", "click", async (event) => {
     const button = event.target.closest("[data-overdue-action]");
@@ -2395,7 +2642,10 @@ async function init() {
   });
 
   try {
-    navigate("today");
+    const initialRoute = typeof api.getInitialRoute === "function"
+      ? await api.getInitialRoute()
+      : "today";
+    navigate(initialRoute);
   } catch (error) {
     showRendererError("主畫面渲染失敗，部分功能仍可繼續使用。", error);
   }

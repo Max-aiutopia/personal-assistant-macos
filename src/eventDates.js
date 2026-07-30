@@ -45,13 +45,18 @@
   const eventOccursOnDate = utils?.eventOccursOnDate || function eventOccursOnDate(task, targetDate) {
     if (task?.kind !== "event" || !task.date || !targetDate) return false;
     if (task.date === targetDate) return true;
-    if (!task.reminderTime || targetDate < task.date) return false;
+    if (targetDate < task.date) return false;
     const endDate = eventEndDate(task);
     if (!endDate || targetDate > endDate) return false;
+    if (task.isAllDay || (!task.reminderTime && !task.endTime)) return true;
+    if (!task.reminderTime) return false;
     return !(targetDate === endDate && task.endTime === "00:00");
   };
 
   const eventTimeLabel = utils?.eventTimeLabel || function eventTimeLabel(task, targetDate) {
+    if (task.isAllDay || (!task.reminderTime && !task.endTime)) {
+      return targetDate === task.date ? "全天" : "全天 · 延續";
+    }
     if (targetDate !== task.date) {
       return task.endTime ? `延續至 ${task.endTime}` : "延續行程";
     }

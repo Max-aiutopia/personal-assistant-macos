@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { handleVoiceCommand } = require("../src/voiceCommands");
+const { handleVoiceCommand, rescheduleEvent } = require("../src/voiceCommands");
 const { applyIntent, resolveBrain } = require("../src/voiceIntent");
 const {
   conversationExcerpt,
@@ -165,6 +165,49 @@ assert.equal(rescheduledMeeting.data.tasks[0].endTime, "11:30");
 assert.equal(rescheduledMeeting.data.sync.pendingEventActions[0].action, "reschedule");
 assert.equal(rescheduledMeeting.data.sync.pendingEventActions[0].date, "2026-06-13");
 assert.equal(rescheduledMeeting.data.sync.pendingEventActions[0].nextReminderTime, "10:30");
+
+const allDayTripData = {
+  ...baseData,
+  sync: { pendingEventActions: [] },
+  tasks: [{
+    id: "trip-1",
+    title: "三天旅行",
+    date: "2026-06-13",
+    reminderTime: "",
+    endDate: "2026-06-15",
+    endTime: "",
+    isAllDay: true,
+    kind: "event",
+    category: "生活",
+    completed: false,
+    createdAt: "2026-06-12T01:00:00.000Z",
+    updatedAt: "2026-06-12T01:00:00.000Z",
+    external: {
+      provider: "eventkit",
+      type: "event",
+      id: "trip-event",
+      calendarId: "google-calendar",
+      source: "Google"
+    }
+  }]
+};
+const allDayReschedule = structuredClone(allDayTripData);
+const allDayResult = rescheduleEvent(
+  allDayReschedule,
+  allDayReschedule.tasks[0],
+  { date: "2026-06-20" },
+  now
+);
+assert.equal(allDayResult.ok, true);
+assert.equal(allDayReschedule.tasks[0].date, "2026-06-20");
+assert.equal(allDayReschedule.tasks[0].endDate, "2026-06-22");
+assert.equal(allDayReschedule.tasks[0].reminderTime, "");
+assert.equal(allDayReschedule.tasks[0].endTime, "");
+assert.equal(allDayReschedule.tasks[0].isAllDay, true);
+assert.equal(
+  allDayReschedule.sync.pendingEventActions[0].nextEndDate,
+  "2026-06-22"
+);
 
 const declinedShoot = handleVoiceCommand(meetingData, "拒絕 Moutain 拍攝", now);
 assert.equal(declinedShoot.data.tasks[1].responseStatus, "declined");

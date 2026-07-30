@@ -49,13 +49,18 @@ function eventEndDate(task) {
 function eventOccursOnDate(task, targetDate) {
   if (task?.kind !== "event" || !task.date || !targetDate) return false;
   if (task.date === targetDate) return true;
-  if (!task.reminderTime || targetDate < task.date) return false;
+  if (targetDate < task.date) return false;
   const endDate = eventEndDate(task);
   if (!endDate || targetDate > endDate) return false;
+  if (task.isAllDay || (!task.reminderTime && !task.endTime)) return true;
+  if (!task.reminderTime) return false;
   return !(targetDate === endDate && task.endTime === "00:00");
 }
 
 function eventTimeLabel(task, targetDate) {
+  if (task.isAllDay || (!task.reminderTime && !task.endTime)) {
+    return targetDate === task.date ? "全天" : "全天 · 延續";
+  }
   if (targetDate !== task.date) {
     return task.endTime ? `延續至 ${task.endTime}` : "延續行程";
   }
@@ -189,6 +194,209 @@ function buildDateItemIndex(tasks = [], startKey, endKey) {
   return index;
 }
 
+function isPlainObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function dataValuesEqual(left, right) {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => dataValuesEqual(value, right[index]))
+    );
+  }
+  if (isPlainObject(left) || isPlainObject(right)) {
+    if (!isPlainObject(left) || !isPlainObject(right)) return false;
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    return (
+      leftKeys.length === rightKeys.length &&
+      leftKeys.every(
+        (key) =>
+          Object.prototype.hasOwnProperty.call(right, key) &&
+          dataValuesEqual(left[key], right[key])
+      )
+    );
+  }
+  return false;
+}
+
+function cloneDataValue(value) {
+  return value === undefined ? undefined : structuredClone(value);
+}
+
+function mergeValueState(base, intended, latest, path) {
+  const statesEqual = (left, right) =>
+    left.present === right.present &&
+    (!left.present || dataValuesEqual(left.value, right.value));
+  const localChanged = !statesEqual(base, intended);
+  const remoteChanged = !statesEqual(base, latest);
+
+  if (!localChanged) {
+    return { ...latest, value: cloneDataValue(latest.value), conflicts: [] };
+  }
+  if (!remoteChanged || statesEqual(intended, latest)) {
+    return { ...intended, value: cloneDataValue(intended.value), conflicts: [] };
+  }
+  if (
+    base.present &&
+    intended.present &&
+    latest.present &&
+    isPlainObject(base.value) &&
+    isPlainObject(intended.value) &&
+    isPlainObject(latest.value)
+  ) {
+    const nested = mergePlainObject(base.value, intended.value, latest.value, path);
+    return { present: true, value: nested.value, conflicts: nested.conflicts };
+  }
+
+  return {
+    ...latest,
+    value: cloneDataValue(latest.value),
+    conflicts: [path]
+  };
+}
+
+function mergePlainObject(base = {}, intended = {}, latest = {}, parentPath = "") {
+  const value = {};
+  const conflicts = [];
+  const keys = [
+    ...new Set([
+      ...Object.keys(latest),
+      ...Object.keys(intended),
+      ...Object.keys(base)
+    ])
+  ];
+
+  for (const key of keys) {
+    const path = parentPath ? `${parentPath}.${key}` : key;
+    const merged = mergeValueState(
+      {
+        present: Object.prototype.hasOwnProperty.call(base, key),
+        value: base[key]
+      },
+      {
+        present: Object.prototype.hasOwnProperty.call(intended, key),
+        value: intended[key]
+      },
+      {
+        present: Object.prototype.hasOwnProperty.call(latest, key),
+        value: latest[key]
+      },
+      path
+    );
+    conflicts.push(...merged.conflicts);
+    if (merged.present) value[key] = merged.value;
+  }
+
+  return { value, conflicts };
+}
+
+function newestTimestamp(...values) {
+  let newest = "";
+  let newestTime = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    const parsed = Date.parse(value || "");
+    if (Number.isFinite(parsed) && parsed >= newestTime) {
+      newest = value;
+      newestTime = parsed;
+    }
+  }
+  if (newest) return newest;
+  return values.at(-1) || values.find(Boolean) || "";
+}
+
+function stableCreatedAt(base, intended, latest) {
+  if (base && Object.prototype.hasOwnProperty.call(base, "createdAt")) {
+    return base.createdAt;
+  }
+  if (intended && Object.prototype.hasOwnProperty.call(intended, "createdAt")) {
+    return intended.createdAt;
+  }
+  return latest?.createdAt;
+}
+
+function itemContentWithoutStableMetadata(item = {}) {
+  const { id, createdAt, updatedAt, ...content } = item;
+  return content;
+}
+
+function mergeArrayDelta(baseItems = [], intendedItems = [], latestItems = []) {
+  const withId = (item) => item && item.id;
+  const baseById = new Map(baseItems.filter(withId).map((item) => [item.id, item]));
+  const intendedById = new Map(intendedItems.filter(withId).map((item) => [item.id, item]));
+  const latestById = new Map(latestItems.filter(withId).map((item) => [item.id, item]));
+  const order = [
+    ...latestItems.filter(withId).map((item) => item.id),
+    ...intendedItems.filter(withId).map((item) => item.id)
+  ];
+  const items = latestItems.filter((item) => !withId(item)).map(cloneDataValue);
+  const conflicts = [];
+  const visited = new Set();
+
+  for (const id of order) {
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const base = baseById.get(id);
+    const intended = intendedById.get(id);
+    const latest = latestById.get(id);
+
+    if (base && !intended) {
+      // A deletion is an intentional renderer delta, including when the remote item changed meanwhile.
+      continue;
+    }
+    if (!base && intended && !latest) {
+      items.push(cloneDataValue(intended));
+      continue;
+    }
+    if (!base && !intended && latest) {
+      items.push(cloneDataValue(latest));
+      continue;
+    }
+    if (base && intended && !latest) {
+      if (!dataValuesEqual(
+        itemContentWithoutStableMetadata(base),
+        itemContentWithoutStableMetadata(intended)
+      )) {
+        conflicts.push({ id, fields: ["$deleted"] });
+      }
+      continue;
+    }
+    if (!intended || !latest) continue;
+
+    const mergeBase = { ...(base || {}) };
+    const mergeIntended = { ...intended };
+    const mergeLatest = { ...latest };
+    for (const field of ["id", "createdAt", "updatedAt"]) {
+      delete mergeBase[field];
+      delete mergeIntended[field];
+      delete mergeLatest[field];
+    }
+    const merged = mergePlainObject(mergeBase, mergeIntended, mergeLatest);
+    const item = merged.value;
+    item.id = id;
+    const createdAt = stableCreatedAt(base, intended, latest);
+    if (createdAt !== undefined) item.createdAt = cloneDataValue(createdAt);
+    const updatedAt = newestTimestamp(
+      base?.updatedAt,
+      intended.updatedAt,
+      latest.updatedAt
+    );
+    if (updatedAt) item.updatedAt = updatedAt;
+    items.push(item);
+    if (merged.conflicts.length) {
+      conflicts.push({ id, fields: [...new Set(merged.conflicts)] });
+    }
+  }
+
+  return { items, conflicts };
+}
+
 const JOURNAL_FIELDS = ["done", "feeling", "tomorrow", "mood"];
 
 function mergeAppendedText(baseValue, localValue, remoteValue) {
@@ -246,6 +454,7 @@ module.exports = {
   foldableRoutineCandidates,
   isFoldableRoutine,
   buildDateItemIndex,
+  mergeArrayDelta,
   mergeAppendedText,
   mergeJournalPatch
 };

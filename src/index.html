@@ -88,7 +88,7 @@
               <p class="hero-kicker">TODAY'S FOCUS</p>
               <h2 id="hero-title">今天最重要的一件事是什麼？</h2>
               <p id="hero-copy">先選一件真正重要的事，我會陪你把它完成。</p>
-              <button class="text-button" data-go="tasks">安排今天 →</button>
+              <button class="text-button" id="hero-action" data-go="tasks">安排今天 →</button>
             </div>
             <div class="hero-orb" aria-hidden="true">
               <span class="orb-shine"></span>
@@ -221,7 +221,13 @@
             </div>
           </div>
           <p id="month-view-summary" class="month-view-summary" role="status" aria-live="polite"></p>
-          <div id="month-grid" class="month-grid" role="region" aria-label="本月行事曆"></div>
+          <div
+            id="month-grid"
+            class="month-grid"
+            role="grid"
+            aria-labelledby="month-title"
+            aria-describedby="month-view-summary"
+          ></div>
         </section>
 
         <section class="page" data-page="journal">
@@ -481,6 +487,11 @@
             placeholder="輸入名稱、備註、日期或分類…"
             autocomplete="off"
             spellcheck="false"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-haspopup="listbox"
+            aria-controls="global-search-results"
+            aria-expanded="false"
             aria-label="搜尋所有待辦與行程"
             aria-describedby="global-search-summary"
           />
@@ -548,21 +559,46 @@
             </select>
           </label>
         </div>
-        <div class="form-grid">
-          <label>
-            日期
-            <input id="task-date" type="date" required />
-          </label>
-          <label>
-            <span id="task-time-label">提醒時間</span>
-            <input id="task-time" type="time" />
-          </label>
-        </div>
-        <label id="task-end-time-row" hidden>
-          結束時間
-          <input id="task-end-time" type="time" aria-describedby="task-end-date-hint" />
-          <span id="task-end-date-hint" class="field-hint" hidden></span>
-        </label>
+        <fieldset class="task-schedule-section" aria-describedby="task-schedule-hint">
+          <legend>排程</legend>
+          <div class="form-grid task-schedule-start">
+            <label>
+              <span id="task-date-label">日期</span>
+              <input id="task-date" type="date" required />
+            </label>
+            <label id="task-start-time-row">
+              <span id="task-time-label">提醒時間</span>
+              <input id="task-time" type="time" />
+            </label>
+          </div>
+          <div id="task-event-schedule" class="event-schedule-fields" hidden>
+            <div class="event-schedule-toolbar">
+              <span>行程選項</span>
+              <label class="task-all-day-option">
+                <input id="task-all-day" type="checkbox" aria-describedby="task-schedule-hint" />
+                <span>全天</span>
+              </label>
+            </div>
+            <div class="form-grid event-schedule-end">
+              <label>
+                結束日期
+                <input id="task-end-date" type="date" />
+              </label>
+              <label id="task-end-time-row">
+                結束時間
+                <input
+                  id="task-end-time"
+                  type="time"
+                  aria-describedby="task-schedule-hint task-end-date-hint"
+                />
+                <span id="task-end-date-hint" class="field-hint" hidden></span>
+              </label>
+            </div>
+          </div>
+          <p id="task-schedule-hint" class="task-schedule-hint">
+            待辦會在指定日期與時間提醒你。
+          </p>
+        </fieldset>
         <label>
           備註
           <textarea id="task-notes" placeholder="補充需要準備的內容…" maxlength="300"></textarea>

@@ -568,7 +568,12 @@ function dateTimeParts(value) {
 }
 
 function eventDurationMs(task) {
-  if (!task.reminderTime) return 24 * 60 * 60 * 1_000;
+  if (!task.reminderTime) {
+    const start = parseDateKey(task.date);
+    const end = parseDateKey(task.endDate || task.date);
+    if (!start || !end || end < start) return 24 * 60 * 60 * 1_000;
+    return end.getTime() - start.getTime() + 24 * 60 * 60 * 1_000;
+  }
   const start = parseClockOnDate(task.date, task.reminderTime);
   const end = task.endTime
     ? parseClockOnDate(task.endDate || eventEndDate(task), task.endTime)
@@ -603,20 +608,24 @@ function rescheduleEvent(data, task, change, now = new Date()) {
     if (nextTime) {
       if (change?.endTime) nextEnd = parseClockOnDate(change.endDate || nextDate, change.endTime);
       else if (task.endTime) nextEnd = new Date(nextStart.getTime() + duration);
+    } else if (!task.reminderTime) {
+      nextEnd = new Date(nextStart.getTime() + duration - 24 * 60 * 60 * 1_000);
     }
   }
 
+  const remainsAllDay = !task.reminderTime && !change?.time;
   const startParts = dateTimeParts(nextStart);
   task.date = startParts.date;
-  task.reminderTime = task.reminderTime || change?.time ? startParts.time : "";
+  task.reminderTime = remainsAllDay ? "" : startParts.time;
   if (nextEnd) {
     const endParts = dateTimeParts(nextEnd);
     task.endDate = endParts.date;
-    task.endTime = endParts.time;
+    task.endTime = remainsAllDay ? "" : endParts.time;
   } else {
     task.endDate = task.date;
     task.endTime = "";
   }
+  task.isAllDay = remainsAllDay;
   task.updatedAt = now.toISOString();
 
   queueEventAction(

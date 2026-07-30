@@ -2,12 +2,24 @@ const DEBUG_ENDPOINT = process.env.DEBUG_ENDPOINT || "http://127.0.0.1:9222";
 const TEST_TASK_TITLE = "__貼身小秘書互動測試__";
 const TEST_EVENT_TITLE = "__行事曆類型測試__";
 const TEST_CROSS_EVENT_TITLE = "__跨午夜行程測試__";
+const TEST_ALL_DAY_EVENT_TITLE = "__三天全天行程測試__";
 const TEST_OVERDUE_TITLE = "__逾期待辦整理測試__";
 const TEST_ROUTINE_TITLE = "__固定安排收合測試__";
 const TEST_JOURNAL_MARKER = "__日誌保存測試__";
+const CRASH_ONLY = process.env.SMOKE_CRASH_ONLY === "1";
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timer));
 }
 
 async function getPages() {
@@ -29,6 +41,12 @@ function createCdpClient(webSocketDebuggerUrl) {
     if (message.error) reject(new Error(message.error.message));
     else resolve(message.result);
   });
+  socket.addEventListener("close", () => {
+    for (const { reject } of pending.values()) {
+      reject(new Error("CDP WebSocket 已關閉"));
+    }
+    pending.clear();
+  });
 
   const ready = new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve, { once: true });
@@ -37,27 +55,43 @@ function createCdpClient(webSocketDebuggerUrl) {
     });
   });
 
+  async function send(method, params = {}) {
+    await ready;
+    if (socket.readyState !== WebSocket.OPEN) {
+      throw new Error("CDP WebSocket 尚未連線或已關閉");
+    }
+    const id = nextId++;
+    const response = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+    socket.send(JSON.stringify({ id, method, params }));
+    return response;
+  }
+
   return {
+    send,
     async evaluate(expression, awaitPromise = true) {
-      await ready;
-      const id = nextId++;
-      const response = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
-      socket.send(
-        JSON.stringify({
-          id,
-          method: "Runtime.evaluate",
-          params: {
-            expression,
-            awaitPromise,
-            returnByValue: true
-          }
-        })
-      );
-      const result = await response;
+      const result = await send("Runtime.evaluate", {
+        expression,
+        awaitPromise,
+        returnByValue: true
+      });
       if (result.exceptionDetails) {
         throw new Error(result.exceptionDetails.text || "頁面程式執行失敗");
       }
       return result.result.value;
+    },
+    async crashPage() {
+      try {
+        await withTimeout(
+          send("Page.crash"),
+          3000,
+          "Page.crash 已觸發但 CDP 連線未及時結束"
+        );
+      } catch (error) {
+        if (/method.*not found|wasn.t found|-32601/i.test(error.message)) throw error;
+        if (!/closed|關閉|crash|target|timed out|未及時結束/i.test(error.message)) {
+          throw error;
+        }
+      }
     },
     close() {
       socket.close();
@@ -65,17 +99,107 @@ function createCdpClient(webSocketDebuggerUrl) {
   };
 }
 
+async function waitForRecoveredMainClient(timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = new Error("尚未找到恢復後的主畫面");
+
+  while (Date.now() < deadline) {
+    let pages = [];
+    try {
+      pages = await getPages();
+    } catch (error) {
+      lastError = error;
+    }
+    const candidates = pages.filter((page) => page.title === "貼身小秘書");
+    for (const page of candidates) {
+      const client = createCdpClient(page.webSocketDebuggerUrl);
+      try {
+        const state = await withTimeout(
+          client.evaluate(`(async () => ({
+            ready: document.readyState,
+            assistantApiReady: Boolean(window.assistantAPI),
+            dataReadable: Boolean((await window.assistantAPI?.getData?.())?.tasks),
+            mainDomReady: Boolean(
+              document.querySelector('#nav') &&
+              document.querySelector('#page-title') &&
+              document.querySelector('[data-page="month"]') &&
+              document.querySelector('#month-grid')
+            ),
+            monthRouteActive: Boolean(
+              document.querySelector('[data-page="month"]')?.classList.contains('active') &&
+              document.querySelector('[data-route="month"]')?.getAttribute('aria-current') === 'page'
+            )
+          }))()`),
+          1500,
+          "恢復後主畫面尚未完成初始化"
+        );
+        if (
+          state.ready === "complete" &&
+          state.assistantApiReady &&
+          state.dataReadable &&
+          state.mainDomReady &&
+          state.monthRouteActive
+        ) {
+          return { client, state };
+        }
+        lastError = new Error(`恢復狀態尚未就緒：${JSON.stringify(state)}`);
+      } catch (error) {
+        lastError = error;
+      }
+      client.close();
+    }
+    await wait(200);
+  }
+
+  throw new Error(`主 renderer crash 後未在 ${timeoutMs}ms 內恢復：${lastError.message}`);
+}
+
+async function verifyMainRendererCrashRecovery(mainClient) {
+  const crashRouteReady = await mainClient.evaluate(`(async () => {
+    const monthNav = document.querySelector('[data-route="month"]');
+    monthNav.click();
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve))
+    );
+    const routeReporterReady = typeof window.assistantAPI.setActiveRoute === 'function';
+    if (routeReporterReady) window.assistantAPI.setActiveRoute('month');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    return {
+      routeReporterReady,
+      monthRouteActive:
+        document.querySelector('[data-page="month"]').classList.contains('active') &&
+        monthNav.getAttribute('aria-current') === 'page'
+    };
+  })()`);
+  if (!crashRouteReady.routeReporterReady || !crashRouteReady.monthRouteActive) {
+    throw new Error(`主 renderer crash 前無法鎖定月份 route：${JSON.stringify(crashRouteReady)}`);
+  }
+
+  try {
+    await mainClient.crashPage();
+    return (await waitForRecoveredMainClient()).client;
+  } finally {
+    mainClient.close();
+  }
+}
+
 async function main() {
   const pages = await getPages();
   const mainPage = pages.find((page) => page.title === "貼身小秘書");
   const voicePage = pages.find((page) => page.title === "小光語音");
-  if (!mainPage || !voicePage) throw new Error("找不到主視窗或語音視窗");
+  if (!mainPage || (!CRASH_ONLY && !voicePage)) throw new Error("找不到主視窗或語音視窗");
 
-  const mainClient = createCdpClient(mainPage.webSocketDebuggerUrl);
-  const voiceClient = createCdpClient(voicePage.webSocketDebuggerUrl);
+  let mainClient = createCdpClient(mainPage.webSocketDebuggerUrl);
+  const voiceClient = voicePage ? createCdpClient(voicePage.webSocketDebuggerUrl) : null;
   let originalSyncSettings;
 
   try {
+    if (CRASH_ONLY) {
+      mainClient = await verifyMainRendererCrashRecovery(mainClient);
+      console.log("✓ 主 renderer crash 後自動恢復 API、DOM 與月份 route");
+      return;
+    }
+
     const initialState = await mainClient.evaluate(`(() => {
       document.querySelector('[data-route="today"]').click();
       return {
@@ -100,7 +224,7 @@ async function main() {
       existing.settings.reminderSyncEnabled = false;
       existing.settings.voiceBrain = 'rules';
       existing.settings.aiVoiceEnabled = false;
-      existing.tasks = existing.tasks.filter((task) => ![${JSON.stringify(TEST_TASK_TITLE)}, ${JSON.stringify(TEST_EVENT_TITLE)}, ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, ${JSON.stringify(TEST_OVERDUE_TITLE)}, ${JSON.stringify(TEST_ROUTINE_TITLE)}].includes(task.title));
+      existing.tasks = existing.tasks.filter((task) => ![${JSON.stringify(TEST_TASK_TITLE)}, ${JSON.stringify(TEST_EVENT_TITLE)}, ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, ${JSON.stringify(TEST_ALL_DAY_EVENT_TITLE)}, ${JSON.stringify(TEST_OVERDUE_TITLE)}, ${JSON.stringify(TEST_ROUTINE_TITLE)}].includes(task.title));
       await window.assistantAPI.saveData(existing);
       document.querySelector('#quick-add-button').click();
       document.querySelector('#task-title').value = ${JSON.stringify(TEST_TASK_TITLE)};
@@ -218,9 +342,9 @@ async function main() {
       const event = latest.tasks.find((task) => task.title === ${JSON.stringify(TEST_EVENT_TITLE)});
       document.querySelector('[data-route="month"]').click();
       const monthGrid = document.querySelector('#month-grid');
-      const monthDays = monthGrid.querySelector('.month-days');
-      const monthHeaders = [...monthGrid.querySelectorAll('.month-weekday')];
-      const monthCells = [...monthDays.querySelectorAll(':scope > .month-cell')];
+      let monthDays = monthGrid.querySelector('.month-days');
+      let monthHeaders = [...monthGrid.querySelectorAll('.month-weekday')];
+      let monthCells = [...monthDays.querySelectorAll('.month-cell')];
       const focusRoutineTrack = [...monthGrid.querySelectorAll('.month-routine-track')]
         .some((item) => item.textContent.includes(${JSON.stringify(TEST_ROUTINE_TITLE)}));
       const focusHidesRoutineChips = ![...monthGrid.querySelectorAll('.month-chip')]
@@ -229,6 +353,9 @@ async function main() {
       const allShowsRoutineChips = [...monthGrid.querySelectorAll('.month-chip')]
         .some((item) => item.textContent.includes(${JSON.stringify(TEST_ROUTINE_TITLE)}));
       document.querySelector('[data-month-view="focus"]').click();
+      monthDays = monthGrid.querySelector('.month-days');
+      monthHeaders = [...monthGrid.querySelectorAll('.month-weekday')];
+      monthCells = [...monthDays.querySelectorAll('.month-cell')];
       const firstRealMonthCell = [...monthGrid.querySelectorAll('.month-cell:not(.empty)')][0];
       const separateDateActions = Boolean(
         firstRealMonthCell.querySelector('[data-day-agenda]') &&
@@ -266,6 +393,74 @@ async function main() {
         widthDelta: Math.max(...firstWeekWidths) - Math.min(...firstWeekWidths)
       };
       layoutProbe.remove();
+      const monthDateButtons = [...monthGrid.querySelectorAll('[data-month-date]')];
+      const initialMonthTabStops = [...monthGrid.querySelectorAll('button')]
+        .filter((button) => button.tabIndex === 0);
+      let activeMonthDate = monthDateButtons.find((button) => button.tabIndex === 0);
+      activeMonthDate.focus();
+      const pressMonthKey = (key) => {
+        document.activeElement.dispatchEvent(
+          new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+        );
+      };
+      const initialMonthIndex = monthDateButtons.indexOf(activeMonthDate);
+      const horizontalKey = initialMonthIndex < monthDateButtons.length - 1 ? 'ArrowRight' : 'ArrowLeft';
+      const horizontalIndex = horizontalKey === 'ArrowRight' ? initialMonthIndex + 1 : initialMonthIndex - 1;
+      pressMonthKey(horizontalKey);
+      const horizontalMoved = document.activeElement === monthDateButtons[horizontalIndex];
+      activeMonthDate = document.activeElement;
+      const horizontalActiveIndex = monthDateButtons.indexOf(activeMonthDate);
+      const verticalKey = horizontalActiveIndex + 7 < monthDateButtons.length ? 'ArrowDown' : 'ArrowUp';
+      const verticalIndex = verticalKey === 'ArrowDown' ? horizontalActiveIndex + 7 : horizontalActiveIndex - 7;
+      pressMonthKey(verticalKey);
+      const verticalMoved = document.activeElement === monthDateButtons[verticalIndex];
+      activeMonthDate = document.activeElement;
+      const beforeHomeIndex = monthDateButtons.indexOf(activeMonthDate);
+      const homeIndex = Math.max(0, beforeHomeIndex - Number(activeMonthDate.dataset.monthColumn || 0));
+      pressMonthKey('Home');
+      const homeMovedToWeekStart = document.activeElement === monthDateButtons[homeIndex];
+      activeMonthDate = document.activeElement;
+      const beforeEndIndex = monthDateButtons.indexOf(activeMonthDate);
+      const endIndex = Math.min(
+        monthDateButtons.length - 1,
+        beforeEndIndex + (6 - Number(activeMonthDate.dataset.monthColumn || 0))
+      );
+      pressMonthKey('End');
+      const endMovedToWeekEnd = document.activeElement === monthDateButtons[endIndex];
+      const singleMonthTabStop =
+        initialMonthTabStops.length === 1 &&
+        initialMonthTabStops[0].matches('[data-month-date]') &&
+        [...monthGrid.querySelectorAll('button')].filter((button) => button.tabIndex === 0).length === 1;
+      const monthDetailControlsOutsideTabOrder = [
+        ...monthGrid.querySelectorAll('.month-chip, .month-day-add, .month-more, .month-routine-track')
+      ].every((button) => button.tabIndex === -1);
+      pressMonthKey('Enter');
+      const enterOpenedDayAgenda = document.querySelector('#day-dialog').open;
+      const dayAgendaKeyboardControls = [...document.querySelectorAll(
+        '#day-dialog button:not([disabled]), #day-dialog input:not([disabled]), #day-dialog textarea:not([disabled])'
+      )].some((control) => control.tabIndex >= 0);
+      document.querySelector('#close-day-dialog').click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      monthGrid.querySelector('[data-month-date][tabindex="0"]').focus();
+      pressMonthKey(' ');
+      const spaceOpenedDayAgenda = document.querySelector('#day-dialog').open;
+      document.querySelector('#close-day-dialog').click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const monthKeyboard = {
+        gridSemantics:
+          monthGrid.getAttribute('role') === 'grid' &&
+          monthGrid.querySelectorAll('[role="row"]').length >= 2 &&
+          monthGrid.querySelectorAll('[role="gridcell"]').length === monthDateButtons.length,
+        singleMonthTabStop,
+        monthDetailControlsOutsideTabOrder,
+        horizontalMoved,
+        verticalMoved,
+        homeMovedToWeekStart,
+        endMovedToWeekEnd,
+        enterOpenedDayAgenda,
+        spaceOpenedDayAgenda,
+        dayAgendaKeyboardControls
+      };
       const monthChip = [...document.querySelectorAll('.month-chip')].find((item) =>
         item.textContent.includes(${JSON.stringify(TEST_EVENT_TITLE)})
       );
@@ -297,6 +492,7 @@ async function main() {
         eventKind: event?.kind,
         eventEndTime: event?.endTime,
         monthLayout,
+        monthKeyboard,
         focusRoutineTrack,
         focusHidesRoutineChips,
         allShowsRoutineChips,
@@ -325,6 +521,16 @@ async function main() {
       !calendarUi.monthLayout.saturdayVisible ||
       !calendarUi.monthLayout.noHorizontalOverflow ||
       !calendarUi.monthLayout.insideViewport ||
+      !calendarUi.monthKeyboard.gridSemantics ||
+      !calendarUi.monthKeyboard.singleMonthTabStop ||
+      !calendarUi.monthKeyboard.monthDetailControlsOutsideTabOrder ||
+      !calendarUi.monthKeyboard.horizontalMoved ||
+      !calendarUi.monthKeyboard.verticalMoved ||
+      !calendarUi.monthKeyboard.homeMovedToWeekStart ||
+      !calendarUi.monthKeyboard.endMovedToWeekEnd ||
+      !calendarUi.monthKeyboard.enterOpenedDayAgenda ||
+      !calendarUi.monthKeyboard.spaceOpenedDayAgenda ||
+      !calendarUi.monthKeyboard.dayAgendaKeyboardControls ||
       !calendarUi.focusRoutineTrack ||
       !calendarUi.focusHidesRoutineChips ||
       !calendarUi.allShowsRoutineChips ||
@@ -338,6 +544,275 @@ async function main() {
       calendarUi.healthCards !== 4
     ) {
       throw new Error(`行事曆介面未正確初始化：${JSON.stringify(calendarUi)}`);
+    }
+
+    const eventScheduleRoundTrip = await mainClient.evaluate(`(async () => {
+      const nextFrame = () => new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve))
+      );
+      const waitForTask = async (predicate, message) => {
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          const latest = await window.assistantAPI.getData();
+          const task = latest.tasks.find(predicate);
+          if (task) return task;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        throw new Error(message);
+      };
+      const waitForTaskDialogToClose = async () => {
+        const deadline = Date.now() + 3000;
+        while (document.querySelector('#task-dialog').open && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        if (document.querySelector('#task-dialog').open) {
+          throw new Error('保存後事項對話框未關閉');
+        }
+      };
+      const openTaskBySearch = async (title, expectedId) => {
+        document.querySelector('#global-search-button').click();
+        await nextFrame();
+        if (!document.querySelector('#search-dialog').open) {
+          throw new Error('無法開啟全域搜尋來重新編輯測試行程');
+        }
+        const searchInput = document.querySelector('#global-search-input');
+        searchInput.value = title;
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        const result = [...document.querySelectorAll(
+          '#global-search-results [data-search-task-id]'
+        )].find((button) =>
+          button.dataset.searchTaskId === expectedId &&
+          button.querySelector('strong')?.textContent === title
+        );
+        if (!result) throw new Error('搜尋找不到要重新編輯的測試行程');
+        result.click();
+        await nextFrame();
+        if (
+          !document.querySelector('#task-dialog').open ||
+          document.querySelector('#task-id').value !== expectedId
+        ) {
+          throw new Error('搜尋結果未開啟正確的測試行程');
+        }
+      };
+
+      const start = new Date();
+      const end = new Date(start);
+      end.setDate(end.getDate() + 2);
+      const startDate = start.toLocaleDateString('en-CA');
+      const endDate = end.toLocaleDateString('en-CA');
+      const editedNotes = '三天全天行程 round-trip 備註';
+
+      document.querySelector('[data-route="tasks"]').click();
+      document.querySelector('#quick-add-button').click();
+      document.querySelector('#task-title').value = ${JSON.stringify(TEST_ALL_DAY_EVENT_TITLE)};
+      const kindInput = document.querySelector('#task-kind');
+      kindInput.value = 'event';
+      kindInput.dispatchEvent(new Event('change', { bubbles: true }));
+      const startDateInput = document.querySelector('#task-date');
+      startDateInput.value = startDate;
+      startDateInput.dispatchEvent(new Event('input', { bubbles: true }));
+      const allDayInput = document.querySelector('#task-all-day');
+      allDayInput.checked = true;
+      allDayInput.dispatchEvent(new Event('change', { bubbles: true }));
+      const endDateInput = document.querySelector('#task-end-date');
+      endDateInput.value = endDate;
+      endDateInput.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('#task-form').requestSubmit();
+
+      const created = await waitForTask(
+        (task) => task.title === ${JSON.stringify(TEST_ALL_DAY_EVENT_TITLE)},
+        '三天全天測試行程未保存'
+      );
+      await waitForTaskDialogToClose();
+      await openTaskBySearch(${JSON.stringify(TEST_ALL_DAY_EVENT_TITLE)}, created.id);
+
+      const openedAllDay = {
+        dialogOpen: document.querySelector('#task-dialog').open,
+        eventScheduleVisible: !document.querySelector('#task-event-schedule').hidden,
+        kind: document.querySelector('#task-kind').value,
+        startDate: document.querySelector('#task-date').value,
+        endDate: document.querySelector('#task-end-date').value,
+        allDayChecked: document.querySelector('#task-all-day').checked,
+        startTime: document.querySelector('#task-time').value,
+        endTime: document.querySelector('#task-end-time').value,
+        startTimeHidden: document.querySelector('#task-start-time-row').hidden,
+        endTimeHidden: document.querySelector('#task-end-time-row').hidden,
+        threeDayHint: document.querySelector('#task-schedule-hint').textContent.includes('3 天')
+      };
+
+      document.querySelector('#task-notes').value = editedNotes;
+      document.querySelector('#task-form').requestSubmit();
+      const edited = await waitForTask(
+        (task) => task.id === created.id && task.notes === editedNotes,
+        '三天全天測試行程重新編輯後未保存'
+      );
+      await waitForTaskDialogToClose();
+
+      const latest = await window.assistantAPI.getData();
+      const crossMidnight = latest.tasks.find(
+        (task) => task.title === ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}
+      );
+      if (!crossMidnight) throw new Error('找不到跨午夜測試行程');
+      await openTaskBySearch(${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, crossMidnight.id);
+      const openedCrossMidnight = {
+        eventScheduleVisible: !document.querySelector('#task-event-schedule').hidden,
+        kind: document.querySelector('#task-kind').value,
+        startDate: document.querySelector('#task-date').value,
+        endDate: document.querySelector('#task-end-date').value,
+        allDayChecked: document.querySelector('#task-all-day').checked,
+        startTime: document.querySelector('#task-time').value,
+        endTime: document.querySelector('#task-end-time').value
+      };
+      document.querySelector('#cancel-dialog').click();
+
+      return {
+        expected: { startDate, endDate, editedNotes },
+        created: {
+          date: created.date,
+          isAllDay: created.isAllDay,
+          reminderTime: created.reminderTime,
+          endTime: created.endTime,
+          endDate: created.endDate
+        },
+        openedAllDay,
+        edited: {
+          title: edited.title,
+          notes: edited.notes,
+          date: edited.date,
+          isAllDay: edited.isAllDay,
+          reminderTime: edited.reminderTime,
+          endTime: edited.endTime,
+          endDate: edited.endDate
+        },
+        crossExpected: {
+          startDate: crossMidnight.date,
+          endDate: crossMidnight.endDate,
+          startTime: crossMidnight.reminderTime,
+          endTime: crossMidnight.endTime
+        },
+        openedCrossMidnight
+      };
+    })()`);
+    if (
+      eventScheduleRoundTrip.created.date !== eventScheduleRoundTrip.expected.startDate ||
+      eventScheduleRoundTrip.created.isAllDay !== true ||
+      eventScheduleRoundTrip.created.reminderTime !== "" ||
+      eventScheduleRoundTrip.created.endTime !== "" ||
+      eventScheduleRoundTrip.created.endDate !== eventScheduleRoundTrip.expected.endDate ||
+      !eventScheduleRoundTrip.openedAllDay.dialogOpen ||
+      !eventScheduleRoundTrip.openedAllDay.eventScheduleVisible ||
+      eventScheduleRoundTrip.openedAllDay.kind !== "event" ||
+      eventScheduleRoundTrip.openedAllDay.startDate !== eventScheduleRoundTrip.expected.startDate ||
+      eventScheduleRoundTrip.openedAllDay.endDate !== eventScheduleRoundTrip.expected.endDate ||
+      !eventScheduleRoundTrip.openedAllDay.allDayChecked ||
+      eventScheduleRoundTrip.openedAllDay.startTime !== "" ||
+      eventScheduleRoundTrip.openedAllDay.endTime !== "" ||
+      !eventScheduleRoundTrip.openedAllDay.startTimeHidden ||
+      !eventScheduleRoundTrip.openedAllDay.endTimeHidden ||
+      !eventScheduleRoundTrip.openedAllDay.threeDayHint ||
+      eventScheduleRoundTrip.edited.title !== TEST_ALL_DAY_EVENT_TITLE ||
+      eventScheduleRoundTrip.edited.notes !== eventScheduleRoundTrip.expected.editedNotes ||
+      eventScheduleRoundTrip.edited.date !== eventScheduleRoundTrip.expected.startDate ||
+      eventScheduleRoundTrip.edited.isAllDay !== true ||
+      eventScheduleRoundTrip.edited.reminderTime !== "" ||
+      eventScheduleRoundTrip.edited.endTime !== "" ||
+      eventScheduleRoundTrip.edited.endDate !== eventScheduleRoundTrip.expected.endDate ||
+      !eventScheduleRoundTrip.openedCrossMidnight.eventScheduleVisible ||
+      eventScheduleRoundTrip.openedCrossMidnight.kind !== "event" ||
+      eventScheduleRoundTrip.openedCrossMidnight.startDate !==
+        eventScheduleRoundTrip.crossExpected.startDate ||
+      eventScheduleRoundTrip.crossExpected.endDate ===
+        eventScheduleRoundTrip.crossExpected.startDate ||
+      eventScheduleRoundTrip.openedCrossMidnight.endDate !==
+        eventScheduleRoundTrip.crossExpected.endDate ||
+      eventScheduleRoundTrip.openedCrossMidnight.allDayChecked ||
+      eventScheduleRoundTrip.openedCrossMidnight.startTime !==
+        eventScheduleRoundTrip.crossExpected.startTime ||
+      eventScheduleRoundTrip.openedCrossMidnight.endTime !==
+        eventScheduleRoundTrip.crossExpected.endTime
+    ) {
+      throw new Error(
+        `跨日／全天行程 round-trip 未正確保存：${JSON.stringify(eventScheduleRoundTrip)}`
+      );
+    }
+
+    const accessibilityUi = await mainClient.evaluate(`(async () => {
+      const nextFrame = () => new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve))
+      );
+      const todayNav = document.querySelector('[data-route="today"]');
+      todayNav.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+      await nextFrame();
+      const dataGo = document.querySelector('[data-page="today"] [data-go="tasks"]');
+      dataGo.focus();
+      dataGo.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 0 }));
+      await nextFrame();
+      const keyboardDataGoFocusedHeading =
+        document.querySelector('[data-page="tasks"]').classList.contains('active') &&
+        document.activeElement === document.querySelector('#page-title');
+
+      todayNav.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+      await nextFrame();
+      dataGo.focus();
+      dataGo.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+      await nextFrame();
+      const mouseDataGoKeptFocus =
+        document.querySelector('[data-page="tasks"]').classList.contains('active') &&
+        document.activeElement !== document.querySelector('#page-title');
+
+      document.querySelector('#global-search-button').click();
+      await nextFrame();
+      const searchInput = document.querySelector('#global-search-input');
+      searchInput.value = '測試';
+      searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      const firstResult = document.querySelector('#global-search-results [role="option"]');
+      const resultCount = document.querySelectorAll('#global-search-results [role="option"]').length;
+      const comboboxLinked =
+        searchInput.getAttribute('role') === 'combobox' &&
+        searchInput.getAttribute('aria-controls') === 'global-search-results' &&
+        searchInput.getAttribute('aria-expanded') === 'true' &&
+        !searchInput.hasAttribute('aria-activedescendant') &&
+        resultCount >= 2;
+      searchInput.focus();
+      searchInput.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+      );
+      const firstArrowSelectedFirst =
+        document.activeElement === searchInput &&
+        searchInput.getAttribute('aria-activedescendant') === firstResult?.id &&
+        firstResult?.getAttribute('aria-selected') === 'true';
+      const expectedTaskId = firstResult?.dataset.searchTaskId;
+      searchInput.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+      );
+      await nextFrame();
+      const enterOpenedAnnouncedResult =
+        document.querySelector('#task-dialog').open &&
+        document.querySelector('#task-id').value === expectedTaskId;
+      const collapsedAfterSearchClosed =
+        searchInput.getAttribute('aria-expanded') === 'false' &&
+        !searchInput.hasAttribute('aria-activedescendant');
+      document.querySelector('#cancel-dialog').click();
+      await nextFrame();
+
+      return {
+        keyboardDataGoFocusedHeading,
+        mouseDataGoKeptFocus,
+        comboboxLinked,
+        firstArrowSelectedFirst,
+        enterOpenedAnnouncedResult,
+        collapsedAfterSearchClosed
+      };
+    })()`);
+    if (
+      !accessibilityUi.keyboardDataGoFocusedHeading ||
+      !accessibilityUi.mouseDataGoKeptFocus ||
+      !accessibilityUi.comboboxLinked ||
+      !accessibilityUi.firstArrowSelectedFirst ||
+      !accessibilityUi.enterOpenedAnnouncedResult ||
+      !accessibilityUi.collapsedAfterSearchClosed
+    ) {
+      throw new Error(`鍵盤與搜尋可及性未正確初始化：${JSON.stringify(accessibilityUi)}`);
     }
 
     const voiceState = await voiceClient.evaluate(`(async () => {
@@ -406,12 +881,14 @@ async function main() {
       const ok = latest.journal[date]?.done === ${JSON.stringify(TEST_JOURNAL_MARKER)};
       if (originalJournal) latest.journal[date] = originalJournal;
       else delete latest.journal[date];
-      latest.tasks = latest.tasks.filter((task) => ![${JSON.stringify(TEST_TASK_TITLE)}, ${JSON.stringify(TEST_EVENT_TITLE)}, ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, ${JSON.stringify(TEST_OVERDUE_TITLE)}].includes(task.title));
+      latest.tasks = latest.tasks.filter((task) => ![${JSON.stringify(TEST_TASK_TITLE)}, ${JSON.stringify(TEST_EVENT_TITLE)}, ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, ${JSON.stringify(TEST_ALL_DAY_EVENT_TITLE)}, ${JSON.stringify(TEST_OVERDUE_TITLE)}].includes(task.title));
       await window.assistantAPI.saveData(latest);
       await window.assistantAPI.openMain('today');
       return immediateLoaded && ok;
     })()`);
     if (!journalSaved) throw new Error("日誌內容未保存");
+
+    mainClient = await verifyMainRendererCrashRecovery(mainClient);
 
     console.log("✓ 主畫面初始化");
     console.log("✓ 新增與完成待辦");
@@ -420,17 +897,22 @@ async function main() {
     console.log("✓ 語音辨識、朗讀與待辦查詢");
     console.log("✓ 行程與待辦分流");
     console.log("✓ 跨午夜行程延續顯示");
+    console.log("✓ 三天全天行程與跨午夜編輯 round-trip");
     console.log("✓ 刪除後復原");
     console.log("✓ 逾期待辦整理");
     console.log("✓ 同步健康狀態");
     console.log("✓ 設定分類鍵盤操作與草稿保護");
     console.log("✓ 月曆重點／全部模式與固定安排收合");
+    console.log("✓ data-go 鍵盤切頁焦點與滑鼠焦點保留");
+    console.log("✓ 搜尋 combobox 選取與 ARIA 狀態");
+    console.log("✓ 月曆單一 Tab 入口與方向鍵日程操作");
+    console.log("✓ 主 renderer crash 後自動恢復 API、DOM 與月份 route");
     console.log("互動測試全部通過");
   } finally {
     if (originalSyncSettings) {
       await mainClient.evaluate(`(async () => {
         const latest = await window.assistantAPI.getData();
-        latest.tasks = latest.tasks.filter((task) => ![${JSON.stringify(TEST_TASK_TITLE)}, ${JSON.stringify(TEST_EVENT_TITLE)}, ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, ${JSON.stringify(TEST_OVERDUE_TITLE)}, ${JSON.stringify(TEST_ROUTINE_TITLE)}].includes(task.title));
+        latest.tasks = latest.tasks.filter((task) => ![${JSON.stringify(TEST_TASK_TITLE)}, ${JSON.stringify(TEST_EVENT_TITLE)}, ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, ${JSON.stringify(TEST_ALL_DAY_EVENT_TITLE)}, ${JSON.stringify(TEST_OVERDUE_TITLE)}, ${JSON.stringify(TEST_ROUTINE_TITLE)}].includes(task.title));
         latest.settings.calendarSyncEnabled = ${JSON.stringify(originalSyncSettings.calendarSyncEnabled)};
         latest.settings.reminderSyncEnabled = ${JSON.stringify(originalSyncSettings.reminderSyncEnabled)};
         latest.settings.voiceBrain = ${JSON.stringify(originalSyncSettings.voiceBrain)};
@@ -439,7 +921,7 @@ async function main() {
       })()`).catch(() => {});
     }
     mainClient.close();
-    voiceClient.close();
+    voiceClient?.close();
   }
 }
 

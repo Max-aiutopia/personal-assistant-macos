@@ -55,6 +55,7 @@ process.on("uncaughtException", (error) => {
 });
 process.on("unhandledRejection", (reason) => writeDiagnostic("unhandledRejection", reason));
 const { createStore } = require("./store");
+const { createCoalescedRunner } = require("./syncCoordinator");
 const { eventOccursOnDate } = require("./utils");
 const { handleVoiceCommand } = require("./voiceCommands");
 const { parseVoiceIntent, applyIntent, testClaude } = require("./voiceIntent");
@@ -63,7 +64,7 @@ const { createSecretStore } = require("./secretStore");
 const {
   dedupeSyncedTasks,
   finalizeExpiredTrash,
-  mergeSyncResult,
+  mergeSyncResultIfCurrent,
   runCalendarBridge
 } = require("./calendarSync");
 const { dateKey, addDays } = require("./utils");
@@ -82,7 +83,7 @@ let secretStore;
 let reminderTimer;
 let calendarSyncTimer;
 let calendarSyncDebounce;
-let calendarSyncPromise;
+let calendarSyncCoordinator;
 let trashCleanupTimer;
 let shortcutRetryTimer;
 let isQuitting = false;
@@ -90,6 +91,12 @@ let voiceShortcut = "Alt+Space";
 let shortcutTestResolver;
 let hasShownBackgroundNotification = false;
 let voiceRecognizerSession;
+let lastMainRoute = "today";
+let mainRendererRecovering = false;
+let mainRendererCrashTimes = [];
+
+const RENDERER_CRASH_WINDOW_MS = 60_000;
+const RENDERER_CRASH_LIMIT = 3;
 
 function getAppIcon() {
   const iconPath = path.join(__dirname, "..", "assets", "app-icon.png");
@@ -98,8 +105,11 @@ function getAppIcon() {
 }
 
 // Electron 安全基線：禁止彈出新視窗與離開本地頁面的導航；外部連結一律走 shell.openExternal
-function hardenWebContents(contents) {
-  contents.on("render-process-gone", (_, details) => writeDiagnostic("render-process-gone", JSON.stringify(details)));
+function hardenWebContents(contents, { onRendererGone } = {}) {
+  contents.on("render-process-gone", (_, details) => {
+    writeDiagnostic("render-process-gone", JSON.stringify(details));
+    if (!isQuitting && details?.reason !== "clean-exit") onRendererGone?.(details);
+  });
   contents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
     return { action: "deny" };
@@ -107,6 +117,72 @@ function hardenWebContents(contents) {
   contents.on("will-navigate", (event, url) => {
     if (!url.startsWith("file://")) event.preventDefault();
   });
+}
+
+function deliverMainRoute(route = lastMainRoute) {
+  lastMainRoute = ALLOWED_ROUTES.includes(route) ? route : "today";
+  const contents = mainWindow?.webContents;
+  if (!contents || contents.isDestroyed()) return;
+  const deliver = () => {
+    if (!contents.isDestroyed()) contents.send("navigate", lastMainRoute);
+  };
+  if (contents.isLoadingMainFrame()) contents.once("did-finish-load", deliver);
+  else deliver();
+}
+
+function recoverMainRenderer(details) {
+  const window = mainWindow;
+  if (!window || window.isDestroyed() || mainRendererRecovering) return;
+  const routeToRestore = lastMainRoute;
+  const now = Date.now();
+  mainRendererCrashTimes = mainRendererCrashTimes.filter(
+    (time) => now - time < RENDERER_CRASH_WINDOW_MS
+  );
+  if (mainRendererCrashTimes.length >= RENDERER_CRASH_LIMIT) {
+    writeDiagnostic("renderer-recovery-stopped", `route=${lastMainRoute} reason=${details?.reason || "unknown"}`);
+    try {
+      new Notification({
+        title: "主畫面暫時無法恢復",
+        body: "資料仍安全保存；請從選單列結束貼身小秘書後重新開啟。"
+      }).show();
+    } catch {}
+    return;
+  }
+
+  mainRendererCrashTimes.push(now);
+  mainRendererRecovering = true;
+  const wasVisible = window.isVisible();
+  const contents = window.webContents;
+  const recoveryTimeout = setTimeout(() => {
+    contents.removeListener("did-finish-load", finish);
+    if (!mainRendererRecovering) return;
+    mainRendererRecovering = false;
+    writeDiagnostic("renderer-recovery-timeout", `route=${lastMainRoute}`);
+    try {
+      new Notification({
+        title: "主畫面恢復逾時",
+        body: "資料仍安全保存；請從選單列重新開啟主畫面。"
+      }).show();
+    } catch {}
+  }, 10_000);
+  const finish = () => {
+    clearTimeout(recoveryTimeout);
+    mainRendererRecovering = false;
+    deliverMainRoute(routeToRestore);
+    if (wasVisible && !window.isDestroyed()) {
+      window.show();
+      window.focus();
+    }
+  };
+  contents.once("did-finish-load", finish);
+  setTimeout(() => {
+    try {
+      if (!contents.isDestroyed()) contents.reload();
+    } catch (error) {
+      mainRendererRecovering = false;
+      writeDiagnostic("renderer-recovery-failed", error);
+    }
+  }, 200);
 }
 
 function createMainWindow() {
@@ -132,7 +208,7 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, "index.html"));
-  hardenWebContents(mainWindow.webContents);
+  hardenWebContents(mainWindow.webContents, { onRendererGone: recoverMainRenderer });
   mainWindow.on("close", (event) => {
     if (!isQuitting) {
       event.preventDefault();
@@ -183,7 +259,7 @@ function showMainWindow(route = "today") {
   if (!mainWindow) createMainWindow();
   mainWindow.show();
   mainWindow.focus();
-  mainWindow.webContents.send("navigate", route);
+  deliverMainRoute(route);
 }
 
 function showVoiceWindow() {
@@ -310,6 +386,7 @@ function eventSyncSignature(task) {
     task.reminderTime || "",
     task.endDate || "",
     task.endTime || "",
+    task.isAllDay ? "all-day" : "timed",
     task.responseStatus || task.external?.responseStatus || ""
   ].join("|");
 }
@@ -382,46 +459,59 @@ function calendarNotReadyResponse(original, mutation, data) {
   return original;
 }
 
-async function performCalendarSync() {
-  if (calendarSyncPromise) return calendarSyncPromise;
+async function performCalendarSyncOnce() {
   const beforeFinalize = store.read();
   let current = finalizeExpiredTrash(beforeFinalize);
   if (syncBroadcastSignature(beforeFinalize) !== syncBroadcastSignature(current)) {
-    current = store.write(current);
+    current = store.writeDurable(current);
   } else {
     current = beforeFinalize;
   }
   if (!calendarSyncEnabled(current)) return current;
 
-  calendarSyncPromise = (async () => {
-    try {
-      const result = await runCalendarBridge(calendarBridgeExecutablePath(), "sync", {
-        settings: current.settings,
-        tasks: current.tasks,
-        pendingDeletes: current.sync?.pendingDeletes || [],
-        pendingEventActions: current.sync?.pendingEventActions || []
-      }, 30_000);
-      const latest = store.read();
-      const merged = mergeSyncResult(latest, result);
-      const saved = store.write(merged);
-      if (syncBroadcastSignature(latest) !== syncBroadcastSignature(saved)) sendDataChanged(saved);
-      return saved;
-    } catch (error) {
-      const latest = store.read();
-      latest.sync = {
-        ...(latest.sync || {}),
-        lastSyncError: error.message,
-        warnings: []
-      };
-      const saved = store.write(latest);
-      sendDataChanged(saved);
-      throw error;
-    } finally {
-      calendarSyncPromise = null;
+  try {
+    const result = await runCalendarBridge(calendarBridgeExecutablePath(), "sync", {
+      settings: current.settings,
+      tasks: current.tasks,
+      pendingDeletes: current.sync?.pendingDeletes || [],
+      pendingEventActions: current.sync?.pendingEventActions || []
+    }, 30_000);
+    const latest = store.read();
+    const scopedResult = mergeSyncResultIfCurrent(current, latest, result);
+    if (scopedResult.stale) {
+      writeDiagnostic(
+        "calendar-sync-stale-result",
+        "同步期間行事曆來源或啟用狀態已變更，舊結果已安全捨棄。"
+      );
+      if (calendarSyncEnabled(latest)) scheduleCalendarSync(0);
+      return latest;
     }
-  })();
+    const saved = store.writeDurable(scopedResult.data);
+    if (syncBroadcastSignature(latest) !== syncBroadcastSignature(saved)) sendDataChanged(saved);
+    return saved;
+  } catch (error) {
+    const latest = store.read();
+    latest.sync = {
+      ...(latest.sync || {}),
+      lastSyncError: error.message,
+      warnings: []
+    };
+    try {
+      const saved = store.writeDurable(latest);
+      sendDataChanged(saved);
+    } catch (persistError) {
+      writeDiagnostic("calendar-sync-persist", persistError);
+      throw persistError;
+    }
+    throw error;
+  }
+}
 
-  return calendarSyncPromise;
+function performCalendarSync() {
+  if (!calendarSyncCoordinator) {
+    calendarSyncCoordinator = createCoalescedRunner(performCalendarSyncOnce);
+  }
+  return calendarSyncCoordinator.run();
 }
 
 function scheduleCalendarSync(delay = 800) {
@@ -763,6 +853,13 @@ function checkReminders() {
 
 function registerIpc() {
   ipcMain.handle("data:get", () => store.read());
+  ipcMain.handle("route:ready", (event) => (
+    event.sender === mainWindow?.webContents ? lastMainRoute : "today"
+  ));
+  ipcMain.on("route:active", (event, route) => {
+    if (event.sender !== mainWindow?.webContents) return;
+    if (ALLOWED_ROUTES.includes(route)) lastMainRoute = route;
+  });
   ipcMain.handle("data:save", (_, data) => {
     const previous = store.read();
     if (Number(data?.revision) !== previous.revision) {

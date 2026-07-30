@@ -5,6 +5,7 @@ const {
   foldableRoutineCandidates,
   isFoldableRoutine,
   buildDateItemIndex,
+  mergeArrayDelta,
   mergeJournalPatch
 } = require("./utils");
 
@@ -16,6 +17,8 @@ contextBridge.exposeInMainWorld("assistantAPI", {
   setLaunchAtLogin: (enabled) => ipcRenderer.invoke("settings:login", enabled),
   testNotification: () => ipcRenderer.invoke("notification:test"),
   openMain: (route) => ipcRenderer.invoke("window:open-main", route),
+  getInitialRoute: () => ipcRenderer.invoke("route:ready"),
+  setActiveRoute: (route) => ipcRenderer.send("route:active", route),
   showVoice: () => ipcRenderer.invoke("voice:show"),
   hideVoice: () => ipcRenderer.invoke("voice:hide"),
   getVoiceShortcut: () => ipcRenderer.invoke("voice:shortcut"),
@@ -40,6 +43,7 @@ contextBridge.exposeInMainWorld("assistantAPI", {
     foldableRoutineCandidates,
     isFoldableRoutine,
     buildDateItemIndex,
+    mergeArrayDelta,
     mergeJournalPatch
   },
   onDataChanged: (callback) => {

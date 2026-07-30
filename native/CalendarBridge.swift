@@ -460,7 +460,17 @@ func applyPendingEventActions(_ actions: [[String: Any]], warnings: inout [Strin
             event.startDate = startDate
             event.isAllDay = nextTime?.isEmpty != false
             if event.isAllDay {
-                event.endDate = Calendar.current.date(byAdding: .day, value: 1, to: startDate) ?? startDate
+                if let nextEndDate = action["nextEndDate"] as? String,
+                   let inclusiveEnd = dateFormatter.date(from: nextEndDate) {
+                    let safeInclusiveEnd = max(inclusiveEnd, startDate)
+                    event.endDate = Calendar.current.date(
+                        byAdding: .day,
+                        value: 1,
+                        to: safeInclusiveEnd
+                    ) ?? safeInclusiveEnd
+                } else {
+                    event.endDate = Date(timeInterval: originalDuration, since: startDate)
+                }
             } else if let nextEndTime = action["nextEndTime"] as? String,
                       !nextEndTime.isEmpty,
                       let nextEndDate = (action["nextEndDate"] as? String) ?? (action["nextDate"] as? String),
@@ -571,7 +581,13 @@ func upsertEvent(
     event.isAllDay = time?.isEmpty != false
     event.startDate = startDate
     if event.isAllDay {
-        event.endDate = Calendar.current.date(byAdding: .day, value: 1, to: startDate) ?? startDate
+        let inclusiveEnd = dateFormatter.date(from: endDate) ?? startDate
+        let safeInclusiveEnd = max(inclusiveEnd, startDate)
+        event.endDate = Calendar.current.date(
+            byAdding: .day,
+            value: 1,
+            to: safeInclusiveEnd
+        ) ?? safeInclusiveEnd
     } else if let endTime, !endTime.isEmpty, let parsedEnd = dateFrom(date: endDate, time: endTime) {
         event.endDate = parsedEnd > startDate
             ? parsedEnd
@@ -657,8 +673,18 @@ func upsertReminder(
 }
 
 func eventDictionary(_ event: EKEvent) -> [String: Any] {
-    let start = dateParts(event.startDate)
-    let end = dateParts(event.endDate)
+    let safeStartDate = event.startDate ?? Date()
+    let safeEndDate = event.endDate ?? safeStartDate
+    let start = dateParts(safeStartDate)
+    let renderedEndDate: Date
+    if event.isAllDay {
+        let previousDay = Calendar.current.date(byAdding: .day, value: -1, to: safeEndDate)
+            ?? safeStartDate
+        renderedEndDate = max(previousDay, safeStartDate)
+    } else {
+        renderedEndDate = safeEndDate
+    }
+    let end = dateParts(renderedEndDate)
     let responseStatus = eventResponseStatus(event)
     return [
         "title": event.title ?? "未命名行程",
@@ -712,7 +738,7 @@ func reminderDictionary(_ reminder: EKReminder) -> [String: Any]? {
     ]
 }
 
-func fetchReminders(calendar: EKCalendar) -> [EKReminder] {
+func fetchReminders(calendar: EKCalendar) -> (reminders: [EKReminder], completed: Bool) {
     let semaphore = DispatchSemaphore(value: 0)
     var reminders: [EKReminder] = []
     let predicate = store.predicateForReminders(in: [calendar])
@@ -720,8 +746,12 @@ func fetchReminders(calendar: EKCalendar) -> [EKReminder] {
         reminders = result ?? []
         semaphore.signal()
     }
-    _ = semaphore.wait(timeout: .now() + 20)
-    return reminders
+    switch semaphore.wait(timeout: .now() + 20) {
+    case .success:
+        return (reminders, true)
+    case .timedOut:
+        return ([], false)
+    }
 }
 
 func runSync() throws {
@@ -761,13 +791,21 @@ func runSync() throws {
     let now = Date()
     let start = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
     let end = Calendar.current.date(byAdding: .day, value: eventImportFutureDays, to: now) ?? now
+    var didSyncReminders = false
 
     if syncEvents, let calendar {
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: [calendar])
         externalItems.append(contentsOf: store.events(matching: predicate).map(eventDictionary))
     }
     if syncReminders, let reminderList {
-        externalItems.append(contentsOf: fetchReminders(calendar: reminderList).compactMap(reminderDictionary))
+        let reminderFetch = fetchReminders(calendar: reminderList)
+        if reminderFetch.completed {
+            externalItems.append(contentsOf: reminderFetch.reminders.compactMap(reminderDictionary))
+            didSyncReminders = true
+        } else {
+            warnings.append("提醒事項讀取逾時；本輪無法確認雲端清單，本機提醒已保留，稍後會重試。")
+            fputs("CalendarBridge reminder fetch timed out; cached reminders preserved.\n", stderr)
+        }
     }
 
     var response = statusPayload()
@@ -778,7 +816,7 @@ func runSync() throws {
     response["warnings"] = warnings
     response["synced"] = [
         "events": syncEvents && calendar != nil,
-        "reminders": syncReminders && reminderList != nil
+        "reminders": didSyncReminders
     ]
     response["syncWindow"] = [
         "eventsStart": dateFormatter.string(from: start),

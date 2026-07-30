@@ -54,6 +54,27 @@ function runCalendarBridge(target, command, payload, timeoutMs = 30_000) {
   });
 }
 
+function syncScope(data = {}) {
+  const settings = data.settings || {};
+  return {
+    calendarSyncEnabled: Boolean(settings.calendarSyncEnabled),
+    reminderSyncEnabled: Boolean(settings.reminderSyncEnabled),
+    calendarId: settings.calendarId || "",
+    reminderListId: settings.reminderListId || ""
+  };
+}
+
+function sameSyncScope(startedData, latestData) {
+  return JSON.stringify(syncScope(startedData)) === JSON.stringify(syncScope(latestData));
+}
+
+function mergeSyncResultIfCurrent(startedData, latestData, result) {
+  if (!sameSyncScope(startedData, latestData)) {
+    return { data: structuredClone(latestData), stale: true };
+  }
+  return { data: mergeSyncResult(latestData, result), stale: false };
+}
+
 function externalKey(external) {
   if (!external?.id || !external?.type) return "";
   return `${external.type}:${external.id}`;
@@ -378,6 +399,8 @@ function mergeSyncResult(inputData, result, now = new Date()) {
 
 module.exports = {
   dedupeSyncedTasks,
+  mergeSyncResultIfCurrent,
+  sameSyncScope,
   enqueueDeletedTasks,
   externalKey,
   stableExternalItemKey,

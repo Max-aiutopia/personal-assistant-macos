@@ -1,9 +1,13 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   dedupeSyncedTasks,
   enqueueDeletedTasks,
   finalizeExpiredTrash,
-  mergeSyncResult
+  mergeSyncResult,
+  mergeSyncResultIfCurrent,
+  sameSyncScope
 } = require("../src/calendarSync");
 const { eventOccursOnDate, eventTimeLabel } = require("../src/eventDates");
 
@@ -283,6 +287,20 @@ assert.equal(
   "延續至 08:45"
 );
 
+const allDayTrip = {
+  date: "2026-06-13",
+  endDate: "2026-06-15",
+  reminderTime: "",
+  endTime: "",
+  isAllDay: true,
+  kind: "event"
+};
+assert.equal(eventOccursOnDate(allDayTrip, "2026-06-13"), true);
+assert.equal(eventOccursOnDate(allDayTrip, "2026-06-15"), true);
+assert.equal(eventOccursOnDate(allDayTrip, "2026-06-16"), false);
+assert.equal(eventTimeLabel(allDayTrip, "2026-06-13"), "全天");
+assert.equal(eventTimeLabel(allDayTrip, "2026-06-14"), "全天 · 延續");
+
 const firstSleep = sharedIdentifierMerged.tasks.find(
   (task) => task.title === "sleep" && task.date === "2026-06-12"
 );
@@ -419,31 +437,55 @@ assert.equal(remoteDeletedMerged.tasks.some((task) => task.title === "別的日�
 assert.equal(remoteDeletedMerged.tasks.some((task) => task.title === "超出同步視窗行程"), true);
 assert.equal(remoteDeletedMerged.sync.pendingDeletes.length, 0);
 
-const remoteReminderDeletedMerged = mergeSyncResult(
-  {
-    tasks: [
-      {
-        id: "eventkit-reminder-deleted",
-        title: "Google 已刪提醒",
-        date: "2026-07-08",
-        reminderTime: "09:00",
-        kind: "reminder",
-        completed: false,
-        createdAt: "2026-06-12T05:00:00.000Z",
-        updatedAt: "2026-06-12T05:00:00.000Z",
-        external: {
-          provider: "eventkit",
-          type: "reminder",
-          id: "deleted-reminder",
-          calendarId: "google-reminders",
-          source: "Google"
-        }
+const reminderSyncBase = {
+  tasks: [
+    {
+      id: "eventkit-reminder-deleted",
+      title: "Google 已刪提醒",
+      date: "2026-07-08",
+      reminderTime: "09:00",
+      kind: "reminder",
+      completed: false,
+      createdAt: "2026-06-12T05:00:00.000Z",
+      updatedAt: "2026-06-12T05:00:00.000Z",
+      external: {
+        provider: "eventkit",
+        type: "reminder",
+        id: "deleted-reminder",
+        calendarId: "google-reminders",
+        source: "Google"
       }
-    ],
-    trash: [],
-    settings: { reminderListId: "google-reminders" },
-    sync: { pendingDeletes: [], deletedExternalItems: [] }
+    }
+  ],
+  trash: [],
+  settings: { reminderListId: "google-reminders" },
+  sync: {
+    pendingDeletes: [],
+    deletedExternalItems: [],
+    lastReminderSyncAt: "2026-06-12T04:00:00.000Z"
+  }
+};
+const timedOutReminderMerged = mergeSyncResult(
+  reminderSyncBase,
+  {
+    links: [],
+    externalItems: [],
+    removedDeletes: [],
+    warnings: ["提醒事項讀取逾時；本機提醒已保留。"],
+    synced: { events: false, reminders: false }
   },
+  new Date("2026-06-12T05:04:30.000Z")
+);
+assert.equal(timedOutReminderMerged.tasks.length, 1);
+assert.equal(timedOutReminderMerged.tasks[0].id, "eventkit-reminder-deleted");
+assert.equal(
+  timedOutReminderMerged.sync.lastReminderSyncAt,
+  "2026-06-12T04:00:00.000Z"
+);
+assert.match(timedOutReminderMerged.sync.warnings[0], /逾時.*保留/);
+
+const remoteReminderDeletedMerged = mergeSyncResult(
+  reminderSyncBase,
   {
     links: [],
     externalItems: [],
@@ -503,9 +545,89 @@ const movedTombstone = mergeSyncResult(
 );
 assert.equal(movedTombstone.tasks.length, 0);
 
+const startedScope = {
+  tasks: [],
+  settings: {
+    calendarSyncEnabled: true,
+    reminderSyncEnabled: false,
+    calendarId: "calendar-a",
+    reminderListId: ""
+  },
+  sync: { pendingDeletes: [], pendingEventActions: [], deletedExternalItems: [] }
+};
+const latestScope = {
+  tasks: [{
+    id: "b-local",
+    title: "B 行事曆現有行程",
+    date: "2026-06-22",
+    reminderTime: "10:00",
+    endDate: "2026-06-22",
+    endTime: "11:00",
+    kind: "event",
+    external: {
+      provider: "eventkit",
+      type: "event",
+      id: "event-b",
+      calendarId: "calendar-b"
+    }
+  }],
+  settings: {
+    calendarSyncEnabled: true,
+    reminderSyncEnabled: false,
+    calendarId: "calendar-b",
+    reminderListId: ""
+  },
+  sync: { pendingDeletes: [], pendingEventActions: [], deletedExternalItems: [] }
+};
+const staleScopeResult = mergeSyncResultIfCurrent(startedScope, latestScope, {
+  links: [],
+  externalItems: [{
+    title: "A 行事曆舊結果",
+    date: "2026-06-22",
+    reminderTime: "09:00",
+    endDate: "2026-06-22",
+    endTime: "10:00",
+    kind: "event",
+    external: {
+      provider: "eventkit",
+      type: "event",
+      id: "event-a",
+      calendarId: "calendar-a"
+    }
+  }],
+  removedDeletes: [],
+  warnings: [],
+  synced: { events: true, reminders: false }
+});
+assert.equal(sameSyncScope(startedScope, latestScope), false);
+assert.equal(staleScopeResult.stale, true);
+assert.deepEqual(staleScopeResult.data, latestScope);
+assert.equal(
+  sameSyncScope(
+    startedScope,
+    { ...startedScope, settings: { ...startedScope.settings, userName: "Max" } }
+  ),
+  true
+);
+
+const calendarBridgeSource = fs.readFileSync(
+  path.join(__dirname, "..", "native", "CalendarBridge.swift"),
+  "utf8"
+);
+assert.ok(
+  calendarBridgeSource.includes(
+    "func fetchReminders(calendar: EKCalendar) -> (reminders: [EKReminder], completed: Bool)"
+  ),
+  "Swift helper 必須區分成功取得空清單與 callback 逾時"
+);
+assert.ok(calendarBridgeSource.includes("case .timedOut:"));
+assert.ok(calendarBridgeSource.includes('"reminders": didSyncReminders'));
+assert.match(calendarBridgeSource, /提醒事項讀取逾時；.*本機提醒已保留/);
+
 console.log("✓ 合併 Apple／Google 行事曆資料");
 console.log("✓ 同步匯入邀請回覆狀態");
 console.log("✓ 同步刪除提醒事項");
+console.log("✓ 提醒事項 callback 逾時採 fail-closed，本機資料保留");
 console.log("✓ 防止雲端舊快照讓已刪除待辦復活");
 console.log("✓ 循環行程主事件與 occurrence ID 去重");
 console.log("✓ 共用 EventKit ID 的重複行程分開保存");
@@ -514,4 +636,5 @@ console.log("✓ 刪除復原期限內不刪除雲端項目");
 console.log("✓ 清理已處理的會議同步動作");
 console.log("✓ Google／Apple 端刪除會同步移除本機副本");
 console.log("✓ 外部行程改期維持本地 ID，墓碑不受日期改動失效");
+console.log("✓ 同步途中切換來源時捨棄舊範圍結果");
 console.log("行事曆同步測試全部通過");
