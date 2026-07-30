@@ -3,6 +3,8 @@ const api = window.assistantAPI;
 const card = document.querySelector(".voice-card");
 const transcriptElement = document.querySelector("#transcript");
 const responseElement = document.querySelector("#response");
+const responseLiveRegion = responseElement.parentElement;
+const conversationElement = document.querySelector(".conversation");
 const promptElement = document.querySelector("#prompt");
 const statusLabel = document.querySelector("#status-label");
 const orbButton = document.querySelector("#voice-orb");
@@ -73,6 +75,28 @@ function setState(state, prompt) {
   };
   statusLabel.textContent = labels[state] || labels.idle;
   promptElement.textContent = prompt || "請說，我在聽";
+  const listening = state === "listening";
+  const busy = state === "thinking" || state === "speaking";
+  const orbLabels = {
+    idle: "開始聆聽",
+    listening: "停止聆聽",
+    thinking: "正在處理語音，請稍候",
+    speaking: "正在回覆，請稍候",
+    error: "重新開始聆聽"
+  };
+  orbButton.setAttribute("aria-label", orbLabels[state] || orbLabels.idle);
+  orbButton.setAttribute("aria-pressed", String(listening));
+  orbButton.setAttribute("aria-busy", String(busy));
+  orbButton.setAttribute("aria-disabled", String(busy));
+}
+
+function setResponse(message, { assertive = false } = {}) {
+  responseLiveRegion.setAttribute("role", assertive ? "alert" : "status");
+  responseLiveRegion.setAttribute("aria-live", assertive ? "assertive" : "polite");
+  responseElement.textContent = message;
+  requestAnimationFrame(() => {
+    conversationElement.scrollTop = conversationElement.scrollHeight;
+  });
 }
 
 function clearAutoHide() {
@@ -210,7 +234,7 @@ async function processTranscript(transcript) {
     clearTimeout(processTimeoutId);
     if (generation !== sessionGeneration) return;
     updateSettings(result.settings);
-    responseElement.textContent = result.response;
+    setResponse(result.response);
     rememberConversationTurn(transcript, result.response);
     speak(result.response, () => {
       isProcessing = false;
@@ -226,7 +250,10 @@ async function processTranscript(transcript) {
     clearTimeout(processTimeoutId);
     isProcessing = false;
     const timedOut = error?.message === "voice-process-timeout";
-    responseElement.textContent = timedOut ? "處理逾時，請再說一次。" : "剛才沒有處理成功，請再說一次。";
+    setResponse(
+      timedOut ? "處理逾時，請再說一次。" : "剛才沒有處理成功，請再說一次。",
+      { assertive: true }
+    );
     setState("error", timedOut ? "處理逾時" : "處理失敗");
   }
 }
@@ -236,7 +263,7 @@ async function startListening() {
   stopSpeaking();
   if (isProcessing || isListening) return;
   transcriptElement.textContent = "正在啟動麥克風…";
-  responseElement.textContent = "第一次使用時，macOS 會詢問語音與麥克風權限。";
+  setResponse("第一次使用時，macOS 會詢問語音與麥克風權限。");
   setState("thinking", "正在啟動語音辨識");
   let started = false;
   try {
@@ -245,7 +272,7 @@ async function startListening() {
     started = false;
   }
   if (!started) {
-    responseElement.textContent = "語音辨識元件無法啟動，請重新安裝貼身小秘書。";
+    setResponse("語音辨識元件無法啟動，請重新安裝貼身小秘書。", { assertive: true });
     setState("error", "無法啟動語音");
   }
 }
@@ -262,12 +289,14 @@ async function prepareVoice() {
   updateSettings(data.settings);
   document.querySelector("#assistant-name").textContent = data.settings.assistantName || "小光";
   transcriptElement.textContent = "我出現了，請直接告訴我你要做什麼。";
-  responseElement.textContent = "你可以新增待辦、記錄日誌，或詢問今天與明天的行程。";
+  setResponse("你可以新增待辦、記錄日誌，或詢問今天與明天的行程。");
   setState("idle", settings.voiceAutoListen ? "準備開始聆聽" : "按一下小光開始");
+  requestAnimationFrame(() => orbButton.focus({ preventScroll: true }));
   if (settings.voiceAutoListen) setTimeout(startListening, 180);
 }
 
 orbButton.addEventListener("click", () => {
+  if (orbButton.getAttribute("aria-disabled") === "true") return;
   if (isListening) stopListening();
   else startListening();
 });
@@ -277,7 +306,7 @@ retryButton.addEventListener("click", async () => {
   isProcessing = false;
   isListening = false;
   stopSpeaking();
-  responseElement.textContent = "正在重新啟動語音辨識…";
+  setResponse("正在重新啟動語音辨識…");
   try {
     await api.stopVoiceListening();
   } catch {}
@@ -291,6 +320,9 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") hideVoice();
 });
 card.addEventListener("mouseenter", clearAutoHide);
+card.addEventListener("focusin", clearAutoHide);
+card.addEventListener("pointerdown", clearAutoHide);
+card.addEventListener("keydown", clearAutoHide);
 
 api.getVoiceShortcut().then((shortcut) => {
   document.querySelector("#shortcut-label").textContent = `${shortcut} 呼叫`;
@@ -313,7 +345,7 @@ api.onVoicePreview(async () => {
   updateSettings(data.settings);
   const message = "語音回覆功能正常。需要我時，按 Option 加空白鍵呼叫我。";
   transcriptElement.textContent = "測試語音";
-  responseElement.textContent = message;
+  setResponse(message);
   stopListening();
   speak(message, () => scheduleAutoHide());
 });
@@ -321,7 +353,7 @@ api.onNativeVoiceEvent((event) => {
   if (event.type === "ready") {
     isListening = true;
     transcriptElement.textContent = "正在聽你說話…";
-    responseElement.textContent = "開始說話後，安靜約 5 秒我會自動送出。";
+    setResponse("開始說話後，安靜約 5 秒我會自動送出。");
     setState("listening", "請說，安靜約 5 秒後結束");
     return;
   }
@@ -336,7 +368,7 @@ api.onNativeVoiceEvent((event) => {
   }
   if (event.type === "error") {
     isListening = false;
-    responseElement.textContent = event.message || "語音辨識暫時無法使用，請再試一次。";
+    setResponse(event.message || "語音辨識暫時無法使用，請再試一次。", { assertive: true });
     setState("error", "語音辨識需要注意");
   }
 });

@@ -1,6 +1,6 @@
 {
   "name": "personal-glow-assistant",
-  "version": "1.3.4",
+  "version": "1.4.0",
   "description": "一個會提醒、記錄並陪伴你的桌面貼身小助理",
   "main": "src/main.js",
   "author": "Max",

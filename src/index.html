@@ -27,22 +27,22 @@
         </div>
 
         <nav id="nav" aria-label="主要功能">
-          <button class="nav-item active" data-route="today">
+          <button class="nav-item active" data-route="today" aria-current="page" title="今天（⌘1）">
             <span class="nav-icon">☀</span><span>今天</span>
           </button>
-          <button class="nav-item" data-route="tasks">
+          <button class="nav-item" data-route="tasks" title="待辦事項（⌘2）">
             <span class="nav-icon">✓</span><span>待辦事項</span>
           </button>
-          <button class="nav-item" data-route="week">
+          <button class="nav-item" data-route="week" title="明天與本週（⌘3）">
             <span class="nav-icon">▦</span><span>明天與本週</span>
           </button>
-          <button class="nav-item" data-route="month">
+          <button class="nav-item" data-route="month" title="本月（⌘4）">
             <span class="nav-icon">▤</span><span>本月</span>
           </button>
-          <button class="nav-item" data-route="journal">
+          <button class="nav-item" data-route="journal" title="每日記錄（⌘5）">
             <span class="nav-icon">✎</span><span>每日記錄</span>
           </button>
-          <button class="nav-item" data-route="settings">
+          <button class="nav-item" data-route="settings" title="設定（⌘6）">
             <span class="nav-icon">⚙</span><span>設定</span>
           </button>
         </nav>
@@ -57,11 +57,29 @@
         <header class="topbar">
           <div>
             <p class="eyebrow" id="today-date"></p>
-            <h1 id="page-title">早安，今天也一起加油</h1>
+            <h1 id="page-title" tabindex="-1">早安，今天也一起加油</h1>
           </div>
-          <button class="primary-button" id="quick-add-button">
-            <span>＋</span> 新增事項
-          </button>
+          <div class="topbar-actions">
+            <button
+              class="search-button"
+              id="global-search-button"
+              type="button"
+              aria-keyshortcuts="Meta+F Control+F"
+              title="搜尋所有待辦與行程（⌘F）"
+            >
+              <span aria-hidden="true">⌕</span>
+              <span>搜尋</span>
+              <kbd aria-hidden="true">⌘F</kbd>
+            </button>
+            <button
+              class="primary-button"
+              id="quick-add-button"
+              aria-keyshortcuts="Meta+N Control+N"
+              title="新增事項（⌘N）"
+            >
+              <span>＋</span> 新增事項
+            </button>
+          </div>
         </header>
 
         <section class="page active" data-page="today">
@@ -131,7 +149,11 @@
                 </div>
                 <span class="mood-mark">☺</span>
               </div>
-              <textarea id="today-quick-journal" placeholder="記下一個片刻、一個想法，或今天完成的事情…"></textarea>
+              <textarea
+                id="today-quick-journal"
+                aria-label="今天的快速記錄"
+                placeholder="記下一個片刻、一個想法，或今天完成的事情…"
+              ></textarea>
               <div class="journal-actions">
                 <span id="journal-save-status">內容會自動保存</span>
                 <button class="small-button" data-go="journal">完整記錄</button>
@@ -146,12 +168,12 @@
               <p class="eyebrow">TASKS</p>
               <h2>把腦中的事情交給我</h2>
             </div>
-            <div class="segmented" id="task-filter">
-              <button class="active" data-filter="all">全部</button>
-              <button data-filter="overdue">逾期</button>
-              <button data-filter="today">今天</button>
-              <button data-filter="upcoming">之後</button>
-              <button data-filter="done">已完成</button>
+            <div class="segmented" id="task-filter" role="group" aria-label="篩選待辦事項">
+              <button class="active" data-filter="open" aria-pressed="true">未完成</button>
+              <button data-filter="overdue" aria-pressed="false">逾期</button>
+              <button data-filter="today" aria-pressed="false">今天</button>
+              <button data-filter="upcoming" aria-pressed="false">之後</button>
+              <button data-filter="done" aria-pressed="false">已完成</button>
             </div>
           </div>
           <div id="overdue-organizer" class="overdue-organizer" hidden>
@@ -192,7 +214,7 @@
               <button id="month-next" class="icon-button" aria-label="下個月">›</button>
             </div>
           </div>
-          <div id="month-grid" class="month-grid"></div>
+          <div id="month-grid" class="month-grid" role="region" aria-label="本月行事曆"></div>
         </section>
 
         <section class="page" data-page="journal">
@@ -201,7 +223,7 @@
               <p class="eyebrow">JOURNAL</p>
               <h2>每天留下小小的足跡</h2>
             </div>
-            <input id="journal-date" class="date-input" type="date" />
+            <input id="journal-date" class="date-input" type="date" aria-label="選擇日誌日期" />
           </div>
           <div class="journal-layout">
             <article class="panel journal-editor">
@@ -211,13 +233,13 @@
               <textarea id="journal-feeling" placeholder="值得記得的心情、靈感或反思…"></textarea>
               <label for="journal-tomorrow">明天想提醒自己的事</label>
               <textarea id="journal-tomorrow" placeholder="明天最重要的事情、需要帶的東西…"></textarea>
-              <div class="mood-picker" id="mood-picker">
+              <div class="mood-picker" id="mood-picker" role="group" aria-label="今天的心情">
                 <span>今天的心情</span>
-                <button data-mood="great" title="很棒">☀</button>
-                <button data-mood="good" title="不錯">◡</button>
-                <button data-mood="calm" title="平靜">○</button>
-                <button data-mood="tired" title="有點累">◔</button>
-                <button data-mood="hard" title="辛苦了">☂</button>
+                <button data-mood="great" title="很棒" aria-label="心情很棒" aria-pressed="false">☀</button>
+                <button data-mood="good" title="不錯" aria-label="心情不錯" aria-pressed="false">◡</button>
+                <button data-mood="calm" title="平靜" aria-label="心情平靜" aria-pressed="false">○</button>
+                <button data-mood="tired" title="有點累" aria-label="心情有點累" aria-pressed="false">◔</button>
+                <button data-mood="hard" title="辛苦了" aria-label="今天辛苦了" aria-pressed="false">☂</button>
               </div>
               <div class="save-row">
                 <span id="full-journal-status">尚未修改</span>
@@ -301,21 +323,21 @@
                 <h3>你希望我怎麼稱呼你？</h3>
                 <p>這個名字會出現在每日問候中。</p>
               </div>
-              <input id="user-name-input" type="text" placeholder="輸入你的名字" maxlength="20" />
+              <input id="user-name-input" type="text" aria-label="你希望我怎麼稱呼你" placeholder="輸入你的名字" maxlength="20" />
             </div>
             <div class="setting-row">
               <div>
                 <h3>替小助理取名字</h3>
                 <p>目前的名字是小光。</p>
               </div>
-              <input id="assistant-name-input" type="text" placeholder="小光" maxlength="12" />
+              <input id="assistant-name-input" type="text" aria-label="小助理的名字" placeholder="小光" maxlength="12" />
             </div>
             <div class="setting-row">
               <div>
                 <h3>每天早安提醒</h3>
                 <p>到了指定時間，我會整理今天尚未完成的事項。</p>
               </div>
-              <input id="brief-time-input" type="time" />
+              <input id="brief-time-input" type="time" aria-label="每天早安提醒時間" />
             </div>
             <div class="setting-row">
               <div>
@@ -323,7 +345,7 @@
                 <p>待辦到時間時顯示 macOS 通知。</p>
               </div>
               <label class="switch">
-                <input id="notifications-toggle" type="checkbox" />
+                <input id="notifications-toggle" type="checkbox" aria-label="系統通知" />
                 <span></span>
               </label>
             </div>
@@ -333,7 +355,7 @@
                 <p>登入後在背景待命，不會自動顯示視窗。</p>
               </div>
               <label class="switch">
-                <input id="launch-toggle" type="checkbox" />
+                <input id="launch-toggle" type="checkbox" aria-label="登入後自動啟動" />
                 <span></span>
               </label>
             </div>
@@ -344,7 +366,7 @@
                 <p id="voice-shortcut-status" class="inline-status" role="status" aria-live="polite">套用後請測試，確認沒有被 ChatGPT 等 App 攔截。</p>
               </div>
               <div class="setting-control-stack shortcut-control">
-                <input id="voice-shortcut-input" type="text" placeholder="Alt+Space" autocomplete="off" spellcheck="false" />
+                <input id="voice-shortcut-input" type="text" aria-label="呼叫快捷鍵" placeholder="Alt+Space" autocomplete="off" spellcheck="false" />
                 <div class="setting-button-group">
                   <button id="save-voice-shortcut-button" class="secondary-button" type="button">套用</button>
                   <button id="test-voice-shortcut-button" class="secondary-button" type="button">測試快捷鍵</button>
@@ -357,7 +379,7 @@
                 <p>按下 ⌥ Space 後立即開啟麥克風，不必再按按鈕。</p>
               </div>
               <label class="switch">
-                <input id="voice-auto-listen-toggle" type="checkbox" />
+                <input id="voice-auto-listen-toggle" type="checkbox" aria-label="呼叫時自動聆聽" />
                 <span></span>
               </label>
             </div>
@@ -367,7 +389,7 @@
                 <p>小光除了顯示文字，也會用系統語音回答你。</p>
               </div>
               <label class="switch">
-                <input id="voice-reply-toggle" type="checkbox" />
+                <input id="voice-reply-toggle" type="checkbox" aria-label="用聲音回答" />
                 <span></span>
               </label>
             </div>
@@ -377,7 +399,7 @@
                 <p>語音互動結束後自動收起，不遮擋工作畫面。</p>
               </div>
               <label class="switch">
-                <input id="voice-auto-hide-toggle" type="checkbox" />
+                <input id="voice-auto-hide-toggle" type="checkbox" aria-label="完成後自動隱藏" />
                 <span></span>
               </label>
             </div>
@@ -407,7 +429,7 @@
                 <p id="claude-test-status" class="inline-status" role="status" aria-live="polite"></p>
               </div>
               <div class="setting-control-stack">
-                <input id="claude-key-input" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
+                <input id="claude-key-input" type="password" aria-label="Claude API 金鑰" placeholder="sk-ant-..." autocomplete="off" spellcheck="false" />
                 <button id="save-claude-key-button" class="secondary-button">儲存金鑰</button>
               </div>
             </div>
@@ -416,7 +438,7 @@
                 <h3>Claude 模型</h3>
                 <p>預設 claude-haiku-4-5（最快最省）。</p>
               </div>
-              <input id="claude-model-input" type="text" placeholder="claude-haiku-4-5" />
+              <input id="claude-model-input" type="text" aria-label="Claude 模型" placeholder="claude-haiku-4-5" />
             </div>
             <div class="setting-row">
               <div>
@@ -424,7 +446,7 @@
                 <p>開啟後語音改用裝置端辨識（不上網、較私密，但中文準確度較低）。</p>
               </div>
               <label class="switch">
-                <input id="voice-privacy-toggle" type="checkbox" />
+                <input id="voice-privacy-toggle" type="checkbox" aria-label="語音隱私模式" />
                 <span></span>
               </label>
             </div>
@@ -433,7 +455,7 @@
                 <h3>Ollama 模型</h3>
                 <p>選 Ollama 時使用，建議 qwen2.5:3b 或 gemma2:2b。</p>
               </div>
-              <input id="ai-model-input" type="text" placeholder="qwen2.5:3b" />
+              <input id="ai-model-input" type="text" aria-label="Ollama 模型" placeholder="qwen2.5:3b" />
             </div>
             <div class="setting-row">
               <div>
@@ -441,7 +463,7 @@
                 <p>預設 http://localhost:11434</p>
                 <p id="ollama-test-status" class="inline-status" role="status" aria-live="polite"></p>
               </div>
-              <input id="ollama-url-input" type="text" placeholder="http://localhost:11434" />
+              <input id="ollama-url-input" type="text" aria-label="Ollama 伺服器" placeholder="http://localhost:11434" />
             </div>
             <div class="settings-actions">
               <button id="test-voice-button" class="secondary-button">測試語音</button>
@@ -456,7 +478,56 @@
       </main>
     </div>
 
-    <dialog id="task-dialog">
+    <dialog id="search-dialog" class="search-dialog" aria-labelledby="search-dialog-title">
+      <div class="search-shell">
+        <div class="dialog-header">
+          <div>
+            <p class="panel-kicker">QUICK FIND</p>
+            <h2 id="search-dialog-title">搜尋所有事項</h2>
+          </div>
+          <button type="button" class="close-button" id="close-search-dialog" aria-label="關閉搜尋">×</button>
+        </div>
+        <label class="global-search-field">
+          <span aria-hidden="true">⌕</span>
+          <input
+            id="global-search-input"
+            type="search"
+            placeholder="輸入名稱、備註、日期或分類…"
+            autocomplete="off"
+            spellcheck="false"
+            aria-describedby="global-search-summary"
+          />
+          <kbd aria-hidden="true">⌘F</kbd>
+        </label>
+        <div id="global-search-summary" class="search-summary" role="status" aria-live="polite">
+          可搜尋待辦、行程、備註、日期與分類
+        </div>
+        <div id="global-search-results" class="search-results" role="listbox" aria-label="搜尋結果"></div>
+        <div class="search-footer" aria-hidden="true">
+          <span>↑ ↓ 選取</span>
+          <span>↵ 編輯</span>
+          <span>Esc 關閉</span>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="day-dialog" class="day-dialog" aria-labelledby="day-dialog-title">
+      <div class="day-dialog-shell">
+        <div class="dialog-header">
+          <div>
+            <p class="panel-kicker">DAY AGENDA</p>
+            <h2 id="day-dialog-title">當日安排</h2>
+          </div>
+          <button type="button" class="close-button" id="close-day-dialog" aria-label="關閉當日安排">×</button>
+        </div>
+        <div id="day-dialog-list" class="task-list day-dialog-list"></div>
+        <div class="day-dialog-actions">
+          <button type="button" class="primary-button" id="day-dialog-add">＋ 新增這一天的事項</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="task-dialog" aria-labelledby="dialog-title">
       <form id="task-form" method="dialog">
         <div class="dialog-header">
           <div>
@@ -465,6 +536,7 @@
           </div>
           <button type="button" class="close-button" id="close-dialog" aria-label="關閉">×</button>
         </div>
+        <div id="task-dialog-status" class="dialog-status" role="alert" hidden></div>
         <input type="hidden" id="task-id" />
         <label>
           事項內容
@@ -501,7 +573,7 @@
         </div>
         <label id="task-end-time-row" hidden>
           結束時間
-          <input id="task-end-time" type="time" />
+          <input id="task-end-time" type="time" aria-describedby="task-end-date-hint" />
           <span id="task-end-date-hint" class="field-hint" hidden></span>
         </label>
         <label>
@@ -518,10 +590,10 @@
       </form>
     </dialog>
 
-    <div id="undo-toast" class="undo-toast" role="status" hidden>
-      <span id="undo-message">已刪除</span>
+    <div id="undo-toast" class="undo-toast" hidden>
+      <span id="undo-message" role="status" aria-live="polite" aria-atomic="true">已刪除</span>
       <button id="undo-delete-button">復原</button>
-      <span id="undo-countdown">10</span>
+      <span id="undo-countdown" aria-hidden="true">10</span>
     </div>
 
     <script src="eventDates.js"></script>

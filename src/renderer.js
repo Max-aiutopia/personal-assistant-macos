@@ -13,7 +13,7 @@ let data = {
   notifiedKeys: []
 };
 let activeRoute = "today";
-let taskFilter = "all";
+let taskFilter = "open";
 let monthCursor = new Date(); // 月檢視目前顯示的月份（任一日即可）
 let selectedMood = "";
 let quickJournalTimer;
@@ -22,7 +22,14 @@ let calendarStatus = null;
 let lastPersistedData = null;
 let persistQueue = Promise.resolve();
 let pendingPersistCount = 0;
+let taskDialogReturnFocus = null;
+let searchDialogReturnFocus = null;
+let dayDialogReturnFocus = null;
+let agendaDate = "";
+let searchResultIds = [];
+let searchActiveIndex = -1;
 const UNDO_WINDOW_MS = 10_000;
+const ROUTES = ["today", "tasks", "week", "month", "journal", "settings"];
 
 // Lightweight render batching for data-changed broadcasts (reduces redundant full re-renders)
 let renderPending = false;
@@ -75,6 +82,19 @@ function showRendererError(message, error) {
     status.textContent = message;
     status.hidden = false;
   }
+}
+
+function showActionError(message, error) {
+  console.error(message, error || "");
+  const status = $("#renderer-status");
+  if (!status) return;
+  status.textContent = message;
+  status.hidden = false;
+  setTimeout(() => {
+    if (document.body.dataset.initError !== "true" && status.textContent === message) {
+      status.hidden = true;
+    }
+  }, 4500);
 }
 
 function localDateKey(date = new Date()) {
@@ -261,7 +281,13 @@ function eventResponseStatus(task) {
 function responseStatusPill(task) {
   const status = eventResponseStatus(task);
   if (!["accepted", "needsAction", "tentative", "declined"].includes(status)) return "";
-  return `<span class="response-pill ${escapeHtml(status)}">${escapeHtml(status)}</span>`;
+  const labels = {
+    accepted: "已接受",
+    needsAction: "待回覆",
+    tentative: "暫定",
+    declined: "已婉拒"
+  };
+  return `<span class="response-pill ${escapeHtml(status)}">${labels[status]}</span>`;
 }
 
 function greeting() {
@@ -271,9 +297,16 @@ function greeting() {
   return "晚安";
 }
 
-function navigate(route) {
+function navigate(route, { focusHeading = false } = {}) {
+  if (!ROUTES.includes(route)) route = "today";
+  const routeChanged = activeRoute !== route;
   activeRoute = route;
-  $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.route === route));
+  $$(".nav-item").forEach((button) => {
+    const isActive = button.dataset.route === route;
+    button.classList.toggle("active", isActive);
+    if (isActive) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
   $$(".page").forEach((page) => page.classList.toggle("active", page.dataset.page === route));
 
   const titles = {
@@ -286,6 +319,10 @@ function navigate(route) {
   };
   $("#page-title").textContent = titles[route] || titles.today;
   $("#quick-add-button").style.display = route === "settings" ? "none" : "";
+  if (routeChanged) {
+    const content = $(".content");
+    if (content) content.scrollTop = 0;
+  }
 
   if (route === "journal") loadJournalEditor($("#journal-date").value || localDateKey());
   if (route === "settings") {
@@ -293,6 +330,9 @@ function navigate(route) {
     refreshCalendarStatus();
   }
   render();
+  if (focusHeading) {
+    requestAnimationFrame(() => $("#page-title")?.focus({ preventScroll: true }));
+  }
 }
 
 function taskRow(task) {
@@ -304,10 +344,15 @@ function taskRow(task) {
         : formatDate(task.date, { month: "numeric", day: "numeric", weekday: "short" });
   return `
     <div class="task-row ${task.completed ? "completed" : ""} ${!task.completed && task.date < localDateKey() ? "overdue" : ""}" data-task-id="${task.id}">
-      <button class="task-check" data-action="toggle" title="${task.completed ? "標示未完成" : "標示完成"}">
+      <button
+        class="task-check"
+        data-action="toggle"
+        title="${task.completed ? "標示未完成" : "標示完成"}"
+        aria-label="${task.completed ? "將" : "將"}「${escapeHtml(task.title)}」標示為${task.completed ? "未完成" : "完成"}"
+      >
         ${task.completed ? "✓" : ""}
       </button>
-      <div>
+      <button class="task-body-button" data-action="edit" aria-label="編輯「${escapeHtml(task.title)}」">
         <span class="task-title">${escapeHtml(task.title)}</span>
         <span class="task-meta">
           <span class="category-dot" data-category="${escapeHtml(task.category)}"></span>
@@ -317,10 +362,9 @@ function taskRow(task) {
           ${isEvent(task) ? responseStatusPill(task) : ""}
           ${task.notes ? ` · ${escapeHtml(task.notes)}` : ""}
         </span>
-      </div>
+      </button>
       <div class="task-menu">
-        <button data-action="edit" title="編輯">✎</button>
-        <button data-action="delete" title="刪除">×</button>
+        <button data-action="delete" title="刪除" aria-label="刪除「${escapeHtml(task.title)}」">×</button>
       </div>
     </div>
   `;
@@ -338,17 +382,16 @@ function eventRow(task, displayDate = task.date) {
   return `
     <div class="task-row event-row" data-task-id="${task.id}">
       <span class="event-time">${escapeHtml(eventTimeLabel(task, displayDate))}</span>
-      <div>
+      <button class="task-body-button" data-action="edit" aria-label="編輯「${escapeHtml(task.title)}」">
         <span class="task-title">${escapeHtml(task.title)}</span>
         <span class="task-meta">
           行程 · ${dateLabel}
           ${task.external?.source ? ` · ${escapeHtml(task.external.source)}` : ""}
           ${responseStatusPill(task)}
         </span>
-      </div>
+      </button>
       <div class="task-menu">
-        <button data-action="edit" title="編輯">✎</button>
-        <button data-action="delete" title="刪除">×</button>
+        <button data-action="delete" title="刪除" aria-label="刪除「${escapeHtml(task.title)}」">×</button>
       </div>
     </div>
   `;
@@ -372,7 +415,207 @@ function sortedTasks(tasks) {
   });
 }
 
+function captureTaskFocus(root) {
+  const active = document.activeElement;
+  const row = active?.closest?.("[data-task-id]");
+  if (!root?.contains(active) || !row) return null;
+  return {
+    taskId: row.dataset.taskId,
+    action: active.dataset?.action || ""
+  };
+}
+
+function restoreTaskFocus(root, focusKey) {
+  if (!focusKey) return;
+  const row = [...root.querySelectorAll("[data-task-id]")].find(
+    (item) => item.dataset.taskId === focusKey.taskId
+  );
+  const target =
+    row?.querySelector(
+      focusKey.action ? `[data-action="${focusKey.action}"]` : ".task-body-button"
+    ) || $("#quick-add-button");
+  requestAnimationFrame(() => target?.focus({ preventScroll: true }));
+}
+
+function normalizedSearchText(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLocaleLowerCase("zh-TW")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function searchableDateText(value) {
+  const date = parseDate(value);
+  if (!date) return String(value || "");
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const paddedMonth = String(month).padStart(2, "0");
+  const paddedDay = String(day).padStart(2, "0");
+  return [
+    `${year}-${paddedMonth}-${paddedDay}`,
+    `${year}/${month}/${day}`,
+    `${year}/${paddedMonth}/${paddedDay}`,
+    `${month}/${day}`,
+    `${paddedMonth}/${paddedDay}`,
+    `${month}月${day}日`,
+    formatDate(date, { weekday: "long" })
+  ].join(" ");
+}
+
+function taskSearchText(task) {
+  return normalizedSearchText(
+    [
+      task.title,
+      task.notes,
+      searchableDateText(task.date),
+      searchableDateText(task.endDate),
+      task.reminderTime,
+      task.endTime,
+      task.category,
+      isEvent(task) ? "行程 會議 event" : "待辦 提醒 reminder",
+      task.completed ? "已完成" : "未完成",
+      task.external?.source,
+      eventResponseStatus(task)
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+}
+
+function searchScore(task, query, terms) {
+  const title = normalizedSearchText(task.title);
+  const notes = normalizedSearchText(task.notes);
+  const haystack = taskSearchText(task);
+  if (!terms.every((term) => haystack.includes(term))) return -1;
+  let score = 0;
+  if (title === query) score += 120;
+  if (title.startsWith(query)) score += 70;
+  if (title.includes(query)) score += 40;
+  if (notes.includes(query)) score += 12;
+  if (!task.completed) score += 4;
+  if (task.date === localDateKey()) score += 3;
+  return score;
+}
+
+function searchResultMarkup(task, index) {
+  const dateLabel = formatDate(task.date, {
+    year: task.date?.startsWith(String(new Date().getFullYear())) ? undefined : "numeric",
+    month: "numeric",
+    day: "numeric",
+    weekday: "short"
+  });
+  const time = task.reminderTime
+    ? `${task.reminderTime}${task.endTime ? `–${task.endTime}` : ""}`
+    : "未設時間";
+  return `
+    <button
+      type="button"
+      class="search-result ${index === searchActiveIndex ? "active" : ""}"
+      id="search-result-${index}"
+      data-search-task-id="${task.id}"
+      data-search-index="${index}"
+      role="option"
+      aria-selected="${index === searchActiveIndex ? "true" : "false"}"
+    >
+      <span class="search-result-kind ${isEvent(task) ? "event" : "reminder"}">${isEvent(task) ? "行程" : "待辦"}</span>
+      <span class="search-result-copy">
+        <strong>${escapeHtml(task.title)}</strong>
+        <span>${escapeHtml(dateLabel)} · ${escapeHtml(time)} · ${escapeHtml(task.category || "其他")}${task.external?.source ? ` · ${escapeHtml(task.external.source)}` : ""}</span>
+      </span>
+      <span class="search-result-arrow" aria-hidden="true">↵</span>
+    </button>
+  `;
+}
+
+function renderGlobalSearch() {
+  const query = normalizedSearchText($("#global-search-input")?.value);
+  const summary = $("#global-search-summary");
+  const results = $("#global-search-results");
+  if (!query) {
+    searchResultIds = [];
+    searchActiveIndex = -1;
+    summary.textContent = "可搜尋待辦、行程、備註、日期與分類";
+    results.innerHTML = `
+      <div class="search-empty">
+        <span aria-hidden="true">⌕</span>
+        <strong>很快就能找到</strong>
+        <p>例如輸入「家教」、「7/30」、「健康」或備註裡的文字。</p>
+      </div>
+    `;
+    return;
+  }
+
+  const terms = query.split(" ").filter(Boolean);
+  const matches = data.tasks
+    .map((task) => ({ task, score: searchScore(task, query, terms) }))
+    .filter((item) => item.score >= 0)
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        `${a.task.date}${a.task.reminderTime || "99:99"}`.localeCompare(
+          `${b.task.date}${b.task.reminderTime || "99:99"}`
+        )
+    )
+    .slice(0, 60)
+    .map((item) => item.task);
+
+  searchResultIds = matches.map((task) => task.id);
+  searchActiveIndex = matches.length ? 0 : -1;
+  summary.textContent = matches.length
+    ? `找到 ${matches.length} 項${matches.length === 60 ? "（先顯示最相關的 60 項）" : ""}`
+    : `找不到「${$("#global-search-input").value.trim()}」`;
+  results.innerHTML = matches.length
+    ? matches.map(searchResultMarkup).join("")
+    : `
+      <div class="search-empty">
+        <span aria-hidden="true">○</span>
+        <strong>沒有符合的事項</strong>
+        <p>試試較短的名稱、日期或分類。</p>
+      </div>
+    `;
+}
+
+function setSearchActiveIndex(index, { focus = false } = {}) {
+  if (!searchResultIds.length) return;
+  searchActiveIndex = Math.max(0, Math.min(index, searchResultIds.length - 1));
+  $$(".search-result", $("#global-search-results")).forEach((button, buttonIndex) => {
+    const isActive = buttonIndex === searchActiveIndex;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", String(isActive));
+  });
+  const active = $(`#search-result-${searchActiveIndex}`);
+  active?.scrollIntoView({ block: "nearest" });
+  if (focus) active?.focus({ preventScroll: true });
+}
+
+function openTaskFromSearch(taskId) {
+  const task = data.tasks.find((item) => item.id === taskId);
+  if (!task) return;
+  const returnFocus = searchDialogReturnFocus || $("#global-search-button");
+  $("#search-dialog").close();
+  openTaskDialog(task, returnFocus);
+}
+
+function openGlobalSearch() {
+  const dialog = $("#search-dialog");
+  if (dialog.open) {
+    $("#global-search-input")?.focus();
+    return;
+  }
+  if ($("#task-dialog")?.open) return;
+  if ($("#day-dialog")?.open) $("#day-dialog").close();
+  searchDialogReturnFocus = document.activeElement;
+  $("#global-search-input").value = "";
+  renderGlobalSearch();
+  dialog.showModal();
+  requestAnimationFrame(() => $("#global-search-input")?.focus());
+}
+
 function renderToday() {
+  const eventFocus = captureTaskFocus($("#today-event-list"));
+  const taskFocus = captureTaskFocus($("#today-task-list"));
   const today = localDateKey();
   const todayTasks = sortedTasks(data.tasks.filter((task) => isReminder(task) && task.date === today));
   const todayEvents = sortedTasks(data.tasks.filter((task) => eventOccursOnDate(task, today)));
@@ -388,7 +631,13 @@ function renderToday() {
     ? todayTasks.slice(0, 5).map(taskRow).join("")
     : emptyState("今天還沒有待辦");
   $("#today-event-list").innerHTML = todayEvents.length
-    ? todayEvents.map((task) => eventRow(task, today)).join("")
+    ? todayEvents
+        .slice(0, 3)
+        .map((task) => eventRow(task, today))
+        .join("") +
+      (todayEvents.length > 3
+        ? `<button type="button" class="list-more-button" data-day-agenda="${today}">查看其餘 ${todayEvents.length - 3} 項行程 →</button>`
+        : "")
     : emptyState(data.settings.calendarSyncEnabled ? "今天沒有行程" : "行事曆同步已關閉，請到設定開啟");
 
   const focusTask = openTasks[0];
@@ -401,19 +650,63 @@ function renderToday() {
   if (document.activeElement !== $("#today-quick-journal")) {
     $("#today-quick-journal").value = quickEntry.done || "";
   }
+  restoreTaskFocus($("#today-event-list"), eventFocus);
+  restoreTaskFocus($("#today-task-list"), taskFocus);
 }
 
 function renderTasks() {
+  const focusKey = captureTaskFocus($("#all-task-list"));
   const today = localDateKey();
   let tasks = sortedTasks(data.tasks.filter(isReminder));
   const overdueTasks = tasks.filter((task) => task.date < today && !task.completed);
   $("#overdue-count").textContent = overdueTasks.length;
   $("#overdue-organizer").hidden = overdueTasks.length === 0;
+  if (taskFilter === "open") tasks = tasks.filter((task) => !task.completed);
   if (taskFilter === "overdue") tasks = overdueTasks;
   if (taskFilter === "today") tasks = tasks.filter((task) => task.date === today && !task.completed);
   if (taskFilter === "upcoming") tasks = tasks.filter((task) => task.date > today && !task.completed);
   if (taskFilter === "done") tasks = tasks.filter((task) => task.completed);
-  $("#all-task-list").innerHTML = tasks.length ? tasks.map(taskRow).join("") : emptyState("這裡目前沒有事項");
+  if (taskFilter === "open" && tasks.length) {
+    const groups = [
+      {
+        key: "overdue",
+        title: "逾期待整理",
+        copy: "先重新安排真正還需要做的事",
+        tasks: tasks.filter((task) => task.date < today)
+      },
+      {
+        key: "today",
+        title: "今天",
+        copy: "現在最值得專心的事項",
+        tasks: tasks.filter((task) => task.date === today)
+      },
+      {
+        key: "upcoming",
+        title: "之後",
+        copy: "已經安排好的下一步",
+        tasks: tasks.filter((task) => task.date > today)
+      }
+    ].filter((group) => group.tasks.length);
+    $("#all-task-list").innerHTML = groups
+      .map(
+        (group) => `
+          <section class="task-group ${group.key}" aria-labelledby="task-group-${group.key}">
+            <div class="task-group-heading">
+              <div>
+                <h3 id="task-group-${group.key}">${group.title}</h3>
+                <span>${group.copy}</span>
+              </div>
+              <strong>${group.tasks.length}</strong>
+            </div>
+            <div class="task-group-list">${group.tasks.map(taskRow).join("")}</div>
+          </section>
+        `
+      )
+      .join("");
+  } else {
+    $("#all-task-list").innerHTML = tasks.length ? tasks.map(taskRow).join("") : emptyState("這裡目前沒有事項");
+  }
+  restoreTaskFocus($("#all-task-list"), focusKey);
 }
 
 function renderWeek() {
@@ -432,29 +725,35 @@ function renderWeek() {
       )
     );
     cards.push(`
-      <article class="day-card ${index === 0 ? "today" : ""}">
-        <span class="day-name">${index === 0 ? "今天" : index === 1 ? "明天" : formatDate(date, { weekday: "long" })}</span>
-        <span class="day-date">${formatDate(date, { month: "numeric", day: "numeric" })}</span>
+      <article class="day-card ${index === 0 ? "today" : ""}" aria-label="${escapeHtml(formatDate(date, { month: "long", day: "numeric", weekday: "long" }))}">
+        <button type="button" class="day-heading" data-day-agenda="${key}" aria-label="查看${escapeHtml(formatDate(date, { month: "long", day: "numeric", weekday: "long" }))}全部安排">
+          <span class="day-name">${index === 0 ? "今天" : index === 1 ? "明天" : formatDate(date, { weekday: "long" })}</span>
+          <span class="day-date">${formatDate(date, { month: "numeric", day: "numeric" })}</span>
+        </button>
         ${
           tasks.length
             ? tasks
+                .slice(0, 4)
                 .map(
                   (task) => `
-                    <div class="day-task" data-task-id="${task.id}">
+                    <div class="day-task" data-task-id="${task.id}" title="${escapeHtml(task.title)}">
                       <div class="day-task-body">
                         ${isEvent(task) ? `<time>${escapeHtml(eventTimeLabel(task, key))}</time>` : task.reminderTime ? `<time>${task.reminderTime}</time>` : ""}
                         <span class="day-task-type">${isEvent(task) ? "行程" : "待辦"}</span>
                         ${isEvent(task) ? responseStatusPill(task) : ""}
-                        ${escapeHtml(task.title)}
+                        <span class="day-task-title">${escapeHtml(task.title)}</span>
                       </div>
                       <div class="day-task-actions">
-                        <button data-action="edit" title="編輯" aria-label="編輯">✎</button>
-                        <button data-action="delete" title="刪除" aria-label="刪除">×</button>
+                        <button data-action="edit" title="編輯" aria-label="編輯「${escapeHtml(task.title)}」">✎</button>
+                        <button data-action="delete" title="刪除" aria-label="刪除「${escapeHtml(task.title)}」">×</button>
                       </div>
                     </div>
                   `
                 )
-                .join("")
+                .join("") +
+              (tasks.length > 4
+                ? `<button type="button" class="week-more" data-day-agenda="${key}">還有 ${tasks.length - 4} 項 →</button>`
+                : "")
             : `<p class="day-empty">${data.settings.calendarSyncEnabled ? "沒有安排<br />留一點空白也很好" : "行事曆同步已關閉<br />請到設定開啟"}</p>`
         }
       </article>
@@ -476,11 +775,13 @@ function renderMonth() {
   const todayKey = localDateKey();
 
   const weekdays = ["日", "一", "二", "三", "四", "五", "六"]
-    .map((w) => `<div class="month-weekday">${w}</div>`)
+    .map((w) => `<div class="month-weekday" aria-hidden="true">${w}</div>`)
     .join("");
 
   const cells = [];
-  for (let i = 0; i < firstWeekday; i += 1) cells.push('<div class="month-cell empty"></div>');
+  for (let i = 0; i < firstWeekday; i += 1) {
+    cells.push('<div class="month-cell empty" aria-hidden="true"></div>');
+  }
 
   for (let day = 1; day <= daysInMonth; day += 1) {
     const date = new Date(year, month, day);
@@ -496,15 +797,29 @@ function renderMonth() {
       .slice(0, 4)
       .map(
         (task) => `
-          <div class="month-chip ${isEvent(task) ? "event" : "reminder"} ${task.completed ? "done" : ""}" data-task-id="${task.id}" title="${escapeHtml(task.title)}">
+          <button
+            type="button"
+            class="month-chip ${isEvent(task) ? "event" : "reminder"} ${task.completed ? "done" : ""}"
+            data-task-id="${task.id}"
+            title="${escapeHtml(task.title)}"
+            aria-label="編輯「${escapeHtml(task.title)}」，${escapeHtml(formatDate(key, { month: "long", day: "numeric" }))}"
+          >
             ${task.reminderTime ? `<time>${task.reminderTime}</time> ` : ""}${escapeHtml(task.title)}
-          </div>`
+          </button>`
       )
       .join("");
-    const more = dayItems.length > 4 ? `<div class="month-more">＋${dayItems.length - 4}</div>` : "";
+    const more =
+      dayItems.length > 4
+        ? `<button type="button" class="month-more" data-day-agenda="${key}" aria-label="查看${escapeHtml(formatDate(key, { month: "long", day: "numeric" }))}全部 ${dayItems.length} 項安排">＋${dayItems.length - 4}</button>`
+        : "";
     cells.push(`
-      <div class="month-cell ${key === todayKey ? "today" : ""}" data-date="${key}">
-        <div class="month-daynum">${day}</div>
+      <div class="month-cell ${key === todayKey ? "today" : ""}">
+        <button
+          type="button"
+          class="month-daynum"
+          data-month-add-date="${key}"
+          aria-label="${escapeHtml(formatDate(key, { month: "long", day: "numeric", weekday: "long" }))}，新增事項"
+        >${day}</button>
         <div class="month-chips">${chips}${more}</div>
       </div>
     `);
@@ -514,16 +829,51 @@ function renderMonth() {
 }
 
 function handleMonthClick(event) {
+  const agendaButton = event.target.closest("[data-day-agenda]");
+  if (agendaButton) {
+    openDayDialog(agendaButton.dataset.dayAgenda);
+    return;
+  }
   const chip = event.target.closest("[data-task-id]");
   if (chip) {
     const task = data.tasks.find((item) => item.id === chip.dataset.taskId);
     if (task) openTaskDialog(task);
     return;
   }
-  const cell = event.target.closest(".month-cell[data-date]");
-  if (cell && !cell.classList.contains("empty")) {
-    openTaskDialog({ date: cell.dataset.date });
+  const addButton = event.target.closest("[data-month-add-date]");
+  if (addButton) {
+    openTaskDialog({ date: addButton.dataset.monthAddDate });
   }
+}
+
+function renderDayDialog() {
+  if (!agendaDate) return;
+  const items = sortedTasks(
+    data.tasks.filter(
+      (task) =>
+        (isEvent(task) && eventOccursOnDate(task, agendaDate)) ||
+        (isReminder(task) && task.date === agendaDate)
+    )
+  );
+  $("#day-dialog-title").textContent = formatDate(agendaDate, {
+    month: "long",
+    day: "numeric",
+    weekday: "long"
+  });
+  $("#day-dialog-list").innerHTML = items.length
+    ? items
+        .map((task) => (isEvent(task) ? eventRow(task, agendaDate) : taskRow(task)))
+        .join("")
+    : emptyState("這一天還沒有安排");
+}
+
+function openDayDialog(date) {
+  if (!parseDate(date)) return;
+  agendaDate = date;
+  dayDialogReturnFocus = document.activeElement;
+  renderDayDialog();
+  $("#day-dialog").showModal();
+  requestAnimationFrame(() => $("#day-dialog-add")?.focus({ preventScroll: true }));
 }
 
 function renderJournalHistory() {
@@ -535,10 +885,10 @@ function renderJournalHistory() {
     ? entries
         .map(
           ([date, entry]) => `
-            <div class="history-item" data-journal-date="${date}">
+            <button type="button" class="history-item" data-journal-date="${date}" aria-label="開啟 ${escapeHtml(formatDate(date, { month: "long", day: "numeric", weekday: "short" }))}的記錄">
               <strong>${formatDate(date, { month: "long", day: "numeric", weekday: "short" })}</strong>
               <p>${escapeHtml(entry.done || entry.feeling || entry.tomorrow)}</p>
-            </div>
+            </button>
           `
         )
         .join("")
@@ -828,6 +1178,8 @@ function renderUndoToast() {
 function render() {
   const now = new Date();
   try {
+    const brandName = $("#brand-name");
+    if (brandName) brandName.textContent = data.settings.assistantName || "小光";
     const todayDate = $("#today-date");
     if (todayDate) {
       todayDate.textContent = formatDate(now, {
@@ -840,17 +1192,38 @@ function render() {
   } catch (error) {
     console.error("頂部日期渲染失敗：", error);
   }
-  for (const renderSection of [renderToday, renderTasks, renderWeek, renderMonth, renderJournalHistory, renderSettings, renderUndoToast]) {
-    try {
-      renderSection();
-    } catch (error) {
-      console.error(`畫面區塊渲染失敗：${renderSection.name}`, error);
-    }
+  const routeRenderers = {
+    today: renderToday,
+    tasks: renderTasks,
+    week: renderWeek,
+    month: renderMonth,
+    journal: renderJournalHistory,
+    settings: renderSettings
+  };
+  const renderSection = routeRenderers[activeRoute] || renderToday;
+  try {
+    renderSection();
+  } catch (error) {
+    console.error(`畫面區塊渲染失敗：${renderSection.name}`, error);
+  }
+  try {
+    renderUndoToast();
+    if ($("#day-dialog")?.open) renderDayDialog();
+    if ($("#search-dialog")?.open) renderGlobalSearch();
+  } catch (error) {
+    console.error("浮動介面渲染失敗：", error);
   }
 }
 
-function openTaskDialog(task = null) {
+function openTaskDialog(task = null, returnFocus = document.activeElement) {
+  taskDialogReturnFocus = returnFocus;
+  const searchDialog = $("#search-dialog");
+  const dayDialog = $("#day-dialog");
+  if (searchDialog?.open) searchDialog.close();
+  if (dayDialog?.open) dayDialog.close();
   $("#dialog-title").textContent = task?.id ? "編輯事項" : "新增事項";
+  $("#task-dialog-status").hidden = true;
+  $("#task-dialog-status").textContent = "";
   $("#task-id").value = task?.id || "";
   $("#task-title").value = task?.title || "";
   $("#task-date").value = task?.date || localDateKey();
@@ -891,17 +1264,27 @@ function loadJournalEditor(date) {
   $("#journal-feeling").value = entry.feeling || "";
   $("#journal-tomorrow").value = entry.tomorrow || "";
   selectedMood = entry.mood || "";
-  $$("#mood-picker button").forEach((button) => button.classList.toggle("active", button.dataset.mood === selectedMood));
+  $$("#mood-picker button").forEach((button) => {
+    const isActive = button.dataset.mood === selectedMood;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
   $("#full-journal-status").textContent = "尚未修改";
 }
 
 async function handleTaskAction(event) {
+  const agendaButton = event.target.closest("[data-day-agenda]");
+  if (agendaButton) {
+    openDayDialog(agendaButton.dataset.dayAgenda);
+    return;
+  }
   const button = event.target.closest("[data-action]");
   const row = event.target.closest("[data-task-id]");
   if (!button || !row) return;
 
   const task = data.tasks.find((item) => item.id === row.dataset.taskId);
   if (!task) return;
+  const snapshot = cloneData(data);
 
   if (button.dataset.action === "toggle") {
     if (!isReminder(task)) return;
@@ -910,37 +1293,141 @@ async function handleTaskAction(event) {
     task.updatedAt = new Date().toISOString();
   }
   if (button.dataset.action === "edit") {
-    openTaskDialog(task);
+    const returnFocus = $("#day-dialog")?.open
+      ? dayDialogReturnFocus || $("#quick-add-button")
+      : document.activeElement;
+    openTaskDialog(task, returnFocus);
     return;
   }
   if (button.dataset.action === "delete") {
     deleteTask(task);
   }
 
-  await persist();
+  try {
+    await persist();
+    if ($("#day-dialog")?.open) renderDayDialog();
+  } catch (error) {
+    data = snapshot;
+    render();
+    showActionError("事項尚未保存，原本內容已保留，請再試一次。", error);
+  }
+}
+
+function restoreDialogFocus(candidate) {
+  setTimeout(() => {
+    if ($("dialog[open]")) return;
+    const target =
+      candidate?.isConnected && !candidate.closest?.("dialog:not([open])")
+        ? candidate
+        : $("#quick-add-button");
+    target?.focus({ preventScroll: true });
+  }, 0);
 }
 
 function wireEvents() {
   on("#nav", "click", (event) => {
     const button = event.target.closest("[data-route]");
-    if (button) navigate(button.dataset.route);
+    if (button) navigate(button.dataset.route, { focusHeading: event.detail === 0 });
   });
   $$("[data-go]").forEach((button) => on(button, "click", () => navigate(button.dataset.go)));
   on("#quick-add-button", "click", () => openTaskDialog());
+  on("#global-search-button", "click", openGlobalSearch);
+  on("#close-search-dialog", "click", () => $("#search-dialog")?.close());
+  on("#close-day-dialog", "click", () => $("#day-dialog")?.close());
   on("#close-dialog", "click", () => $("#task-dialog")?.close());
   on("#cancel-dialog", "click", () => $("#task-dialog")?.close());
+  on("#search-dialog", "close", () => restoreDialogFocus(searchDialogReturnFocus));
+  on("#day-dialog", "close", () => restoreDialogFocus(dayDialogReturnFocus));
+  on("#task-dialog", "close", () => restoreDialogFocus(taskDialogReturnFocus));
+  on("#global-search-input", "input", renderGlobalSearch);
+  on("#global-search-input", "keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSearchActiveIndex(searchActiveIndex < 0 ? 0 : searchActiveIndex + 1, { focus: true });
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSearchActiveIndex(searchActiveIndex <= 0 ? searchResultIds.length - 1 : searchActiveIndex - 1, { focus: true });
+    } else if (event.key === "Enter" && searchActiveIndex >= 0) {
+      event.preventDefault();
+      openTaskFromSearch(searchResultIds[searchActiveIndex]);
+    }
+  });
+  on("#global-search-results", "click", (event) => {
+    const result = event.target.closest("[data-search-task-id]");
+    if (result) openTaskFromSearch(result.dataset.searchTaskId);
+  });
+  on("#global-search-results", "keydown", (event) => {
+    const result = event.target.closest("[data-search-index]");
+    if (!result) return;
+    const index = Number(result.dataset.searchIndex);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSearchActiveIndex(index + 1, { focus: true });
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (index === 0) $("#global-search-input")?.focus();
+      else setSearchActiveIndex(index - 1, { focus: true });
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      openTaskFromSearch(result.dataset.searchTaskId);
+    }
+  });
+  on("#day-dialog-list", "click", handleTaskAction);
+  on("#day-dialog-add", "click", () => {
+    const returnFocus = dayDialogReturnFocus || $("#quick-add-button");
+    $("#day-dialog").close();
+    openTaskDialog({ date: agendaDate }, returnFocus);
+  });
+  on(document, "keydown", (event) => {
+    const command = event.metaKey || event.ctrlKey;
+    if (!command || event.altKey) return;
+    const key = event.key.toLowerCase();
+    if (key === "f") {
+      event.preventDefault();
+      openGlobalSearch();
+      return;
+    }
+    if (key === "n") {
+      event.preventDefault();
+      if (!$("#task-dialog")?.open) openTaskDialog();
+      return;
+    }
+    const routeIndex = Number(event.key) - 1;
+    if (
+      !event.shiftKey &&
+      routeIndex >= 0 &&
+      routeIndex < ROUTES.length &&
+      !$("dialog[open]")
+    ) {
+      event.preventDefault();
+      navigate(ROUTES[routeIndex], { focusHeading: true });
+    }
+  });
   on("#delete-task-button", "click", async () => {
     const id = $("#task-id").value;
     const task = data.tasks.find((item) => item.id === id);
-    if (!task || !deleteTask(task)) return;
-    await persist();
-    $("#task-dialog").close();
+    if (!task) return;
+    const snapshot = cloneData(data);
+    if (!deleteTask(task)) return;
+    const form = $("#task-form");
+    form.setAttribute("aria-busy", "true");
+    try {
+      await persist();
+      $("#task-dialog").close();
+    } catch (error) {
+      data = snapshot;
+      $("#task-dialog-status").textContent = `刪除失敗：${error.message || "請再試一次"}`;
+      $("#task-dialog-status").hidden = false;
+    } finally {
+      form.removeAttribute("aria-busy");
+    }
   });
 
   on("#task-form", "submit", async (event) => {
     event.preventDefault();
     const id = $("#task-id").value;
     const existing = data.tasks.find((task) => task.id === id);
+    const snapshot = cloneData(data);
     const task = {
       id: id || uid(),
       title: $("#task-title").value.trim(),
@@ -965,10 +1452,28 @@ function wireEvents() {
         ? addDateDays(task.date, 1)
         : task.date;
     if (!task.title || !task.date) return;
+    const form = $("#task-form");
+    const submitButton = form.querySelector('[type="submit"]');
+    form.setAttribute("aria-busy", "true");
+    submitButton.disabled = true;
+    $("#task-dialog-status").hidden = true;
     if (existing) Object.assign(existing, task);
-    else data.tasks.push(task);
-    await persist();
-    $("#task-dialog").close();
+    else {
+      data.tasks.push(task);
+      $("#task-id").value = task.id;
+    }
+    try {
+      await persist();
+      $("#task-dialog").close();
+    } catch (error) {
+      data = snapshot;
+      $("#task-id").value = id;
+      $("#task-dialog-status").textContent = `保存失敗：${error.message || "請再試一次"}`;
+      $("#task-dialog-status").hidden = false;
+    } finally {
+      form.removeAttribute("aria-busy");
+      submitButton.disabled = false;
+    }
   });
 
   on("#today-task-list", "click", handleTaskAction);
@@ -997,15 +1502,22 @@ function wireEvents() {
     const button = event.target.closest("[data-filter]");
     if (!button) return;
     taskFilter = button.dataset.filter;
-    $$("#task-filter button").forEach((item) => item.classList.toggle("active", item === button));
+    $$("#task-filter button").forEach((item) => {
+      const isActive = item === button;
+      item.classList.toggle("active", isActive);
+      item.setAttribute("aria-pressed", String(isActive));
+    });
     renderTasks();
   });
   on("#overdue-organizer", "click", async (event) => {
     const button = event.target.closest("[data-overdue-action]");
     if (!button) return;
+    const snapshot = cloneData(data);
     const today = localDateKey();
     const tomorrow = localDateKey(addDays(new Date(), 1));
     const now = new Date().toISOString();
+    button.disabled = true;
+    $("#overdue-organizer")?.setAttribute("aria-busy", "true");
     for (const task of data.tasks) {
       if (!isReminder(task) || task.completed || task.date >= today) continue;
       if (button.dataset.overdueAction === "complete") {
@@ -1016,15 +1528,31 @@ function wireEvents() {
       }
       task.updatedAt = now;
     }
-    await persist();
+    try {
+      await persist();
+    } catch (error) {
+      data = snapshot;
+      render();
+      showActionError("批次整理尚未保存，所有事項已還原，請再試一次。", error);
+    } finally {
+      button.disabled = false;
+      $("#overdue-organizer")?.removeAttribute("aria-busy");
+    }
   });
   on("#undo-delete-button", "click", async () => {
     const trashId = $("#undo-toast").dataset.trashId;
     const entry = (data.trash || []).find((item) => item.id === trashId);
     if (!entry) return;
+    const snapshot = cloneData(data);
     data.tasks.push(entry.task);
     data.trash = data.trash.filter((item) => item.id !== trashId);
-    await persist();
+    try {
+      await persist();
+    } catch (error) {
+      data = snapshot;
+      render();
+      showActionError("復原尚未保存，刪除狀態已保留，請再試一次。", error);
+    }
   });
 
   on("#today-quick-journal", "input", () => {
@@ -1037,8 +1565,12 @@ function wireEvents() {
         done: $("#today-quick-journal").value,
         updatedAt: new Date().toISOString()
       };
-      await persist();
-      $("#journal-save-status").textContent = "已自動保存";
+      try {
+        await persist();
+        $("#journal-save-status").textContent = "已自動保存";
+      } catch {
+        $("#journal-save-status").textContent = "尚未保存，請再輸入一次";
+      }
     }, 500);
   });
 
@@ -1047,7 +1579,11 @@ function wireEvents() {
     const button = event.target.closest("[data-mood]");
     if (!button) return;
     selectedMood = button.dataset.mood;
-    $$("#mood-picker button").forEach((item) => item.classList.toggle("active", item === button));
+    $$("#mood-picker button").forEach((item) => {
+      const isActive = item === button;
+      item.classList.toggle("active", isActive);
+      item.setAttribute("aria-pressed", String(isActive));
+    });
     $("#full-journal-status").textContent = "尚未保存";
   });
   $$(".journal-editor textarea").forEach((input) =>
@@ -1320,7 +1856,9 @@ async function init() {
   });
   listenApi("onCalendarStatusChanged", (status) => {
     calendarStatus = status;
-    try { renderSettings(); } catch (error) { console.error("行事曆狀態渲染失敗：", error); }
+    if (activeRoute === "settings") {
+      try { renderSettings(); } catch (error) { console.error("行事曆狀態渲染失敗：", error); }
+    }
   });
 
   try {

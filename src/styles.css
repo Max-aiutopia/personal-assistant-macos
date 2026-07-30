@@ -1,13 +1,15 @@
 :root {
   color-scheme: light;
   --ink: #2f2941;
-  --muted: #8b849b;
-  --line: #e9e3f1;
+  --muted: #716a7d;
+  --line: #e5dfed;
   --paper: #ffffff;
-  --background: #f8f6fc;
+  --background: #f7f5fb;
   --lavender: #8668dd;
   --lavender-dark: #6d51c5;
+  --lavender-deep: #5d43b5;
   --lavender-soft: #eee9fb;
+  --focus-ring: rgba(109, 81, 197, 0.34);
   --pink: #ffb7c8;
   --mint: #bde7d0;
   --yellow: #ffe3a3;
@@ -54,6 +56,16 @@ select {
 
 button {
   color: inherit;
+}
+
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .app-shell {
@@ -188,7 +200,7 @@ nav {
 
 .content {
   min-width: 0;
-  padding: 56px 42px 42px;
+  padding: 48px 38px 42px;
   overflow-y: auto;
 }
 
@@ -197,7 +209,7 @@ nav {
   align-items: center;
   justify-content: space-between;
   max-width: 1180px;
-  margin: 0 auto 28px;
+  margin: 0 auto 22px;
 }
 
 .eyebrow,
@@ -216,6 +228,45 @@ nav {
   letter-spacing: -0.035em;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.search-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 10px 8px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #625a70;
+  cursor: pointer;
+  font-weight: 650;
+  transition: 150ms ease;
+}
+
+.search-button:hover {
+  border-color: #cfc4e6;
+  background: white;
+  color: var(--lavender-dark);
+}
+
+kbd {
+  padding: 3px 6px;
+  border: 1px solid #ddd6e7;
+  border-bottom-color: #c8bed7;
+  border-radius: 6px;
+  background: #f6f3fa;
+  color: #71677f;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  font-size: 10px;
+  font-weight: 650;
+}
+
 .primary-button,
 .secondary-button,
 .small-button,
@@ -228,14 +279,14 @@ nav {
 .primary-button {
   padding: 11px 18px;
   border: 0;
-  background: var(--lavender);
+  background: var(--lavender-dark);
   color: white;
   box-shadow: 0 8px 20px rgba(122, 91, 207, 0.2);
   font-weight: 650;
 }
 
 .primary-button:hover {
-  background: var(--lavender-dark);
+  background: var(--lavender-deep);
   transform: translateY(-1px);
 }
 
@@ -272,7 +323,7 @@ nav {
   display: none;
   max-width: 1180px;
   margin: 0 auto;
-  animation: page-in 260ms ease both;
+  animation: page-in 180ms ease both;
 }
 
 .page.active {
@@ -290,10 +341,10 @@ nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 190px;
-  padding: 34px 44px;
+  min-height: 146px;
+  padding: 24px 32px;
   border: 1px solid #e8e0f8;
-  border-radius: 28px;
+  border-radius: 24px;
   background:
     radial-gradient(circle at 80% 20%, rgba(255, 255, 255, 0.7), transparent 24%),
     linear-gradient(120deg, #eee8fc, #f8eff8);
@@ -302,13 +353,13 @@ nav {
 
 .hero-card h2 {
   max-width: 620px;
-  margin: 0 0 9px;
-  font-size: 25px;
+  margin: 0 0 7px;
+  font-size: 24px;
   letter-spacing: -0.03em;
 }
 
 .hero-card p:not(.hero-kicker) {
-  margin: 0 0 16px;
+  margin: 0 0 12px;
   color: #736982;
 }
 
@@ -323,10 +374,10 @@ nav {
 
 .hero-orb {
   position: relative;
-  width: 118px;
-  height: 118px;
+  width: 86px;
+  height: 86px;
   flex: 0 0 auto;
-  margin-right: 36px;
+  margin-right: 22px;
   border-radius: 43% 52% 46% 55%;
   background: linear-gradient(145deg, #a78fec 10%, #7657d2 72%);
   box-shadow:
@@ -344,10 +395,10 @@ nav {
 
 .orb-shine {
   position: absolute;
-  top: 19px;
-  left: 24px;
-  width: 26px;
-  height: 14px;
+  top: 14px;
+  left: 18px;
+  width: 20px;
+  height: 10px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.22);
   transform: rotate(-25deg);
@@ -355,54 +406,54 @@ nav {
 
 .orb-eye {
   position: absolute;
-  top: 49px;
-  width: 8px;
-  height: 12px;
+  top: 36px;
+  width: 6px;
+  height: 9px;
   border-radius: 50%;
   background: white;
   box-shadow: 0 2px 0 rgba(64, 38, 129, 0.16);
 }
 
 .orb-eye.left {
-  left: 38px;
+  left: 28px;
 }
 
 .orb-eye.right {
-  right: 36px;
+  right: 27px;
 }
 
 .orb-mouth {
   position: absolute;
-  left: 51px;
-  top: 72px;
-  width: 20px;
-  height: 10px;
-  border-bottom: 3px solid white;
+  left: 37px;
+  top: 53px;
+  width: 15px;
+  height: 8px;
+  border-bottom: 2px solid white;
   border-radius: 0 0 20px 20px;
 }
 
 .orb-cheek {
   position: absolute;
-  top: 70px;
-  width: 14px;
-  height: 7px;
+  top: 51px;
+  width: 10px;
+  height: 5px;
   border-radius: 50%;
   background: rgba(255, 181, 205, 0.65);
 }
 
 .orb-cheek.left {
-  left: 23px;
+  left: 17px;
 }
 
 .orb-cheek.right {
-  right: 21px;
+  right: 16px;
 }
 
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-  margin: 18px 0;
+  gap: 12px;
+  margin: 14px 0;
 }
 
 .stat-card,
@@ -415,8 +466,8 @@ nav {
 .stat-card {
   display: grid;
   gap: 7px;
-  padding: 21px 24px;
-  border-radius: 18px;
+  padding: 16px 20px;
+  border-radius: 16px;
 }
 
 .stat-label,
@@ -426,7 +477,7 @@ nav {
 }
 
 .stat-card strong {
-  font-size: 30px;
+  font-size: 27px;
 }
 
 .two-column {
@@ -522,14 +573,29 @@ nav {
 .task-check {
   display: grid;
   place-items: center;
-  width: 21px;
-  height: 21px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: 1.5px solid #cfc4e5;
   border-radius: 7px;
   background: white;
   color: white;
   cursor: pointer;
+}
+
+.task-body-button {
+  display: block;
+  min-width: 0;
+  padding: 3px 2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.task-body-button:hover .task-title {
+  color: var(--lavender-dark);
 }
 
 .task-row.completed .task-check {
@@ -627,11 +693,19 @@ nav {
 }
 
 .task-menu button {
+  min-width: 32px;
+  min-height: 32px;
   padding: 5px 7px;
   border: 0;
+  border-radius: 8px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+}
+
+.task-menu button:hover {
+  background: #f4f0fb;
+  color: #a04458;
 }
 
 .empty-state {
@@ -640,6 +714,27 @@ nav {
   min-height: 140px;
   color: var(--muted);
   text-align: center;
+}
+
+.task-list.compact .empty-state {
+  min-height: 96px;
+}
+
+.list-more-button {
+  justify-self: center;
+  min-height: 32px;
+  padding: 6px 11px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--lavender-soft);
+  color: var(--lavender-dark);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.list-more-button:hover {
+  background: #e4dcf8;
 }
 
 .empty-symbol {
@@ -725,6 +820,61 @@ select:focus {
   min-height: 390px;
 }
 
+.task-group {
+  display: grid;
+  gap: 10px;
+  padding: 4px 0 16px;
+}
+
+.task-group + .task-group {
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.task-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 4px;
+}
+
+.task-group-heading h3 {
+  margin: 0 0 3px;
+  font-size: 15px;
+}
+
+.task-group-heading span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.task-group-heading strong {
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: var(--lavender-soft);
+  color: var(--lavender-dark);
+  font-size: 11px;
+}
+
+.task-group.overdue .task-group-heading h3,
+.task-group.overdue .task-group-heading strong {
+  color: #a04458;
+}
+
+.task-group.overdue .task-group-heading strong {
+  background: #fff0f3;
+}
+
+.task-group-list {
+  display: grid;
+  gap: 9px;
+}
+
 .overdue-organizer {
   display: flex;
   align-items: center;
@@ -768,15 +918,16 @@ select:focus {
 
 .week-board {
   display: grid;
-  grid-template-columns: repeat(7, minmax(150px, 1fr));
-  gap: 11px;
-  overflow-x: auto;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+  overflow-x: hidden;
   padding-bottom: 8px;
 }
 
 .day-card {
+  min-width: 0;
   min-height: 350px;
-  padding: 17px 14px;
+  padding: 14px 10px;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: white;
@@ -788,6 +939,22 @@ select:focus {
   background: linear-gradient(180deg, #f5f1fe, white 45%);
 }
 
+.day-heading {
+  display: block;
+  width: 100%;
+  padding: 2px 3px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+}
+
+.day-heading:hover {
+  background: rgba(238, 233, 251, 0.72);
+}
+
 .day-name {
   display: block;
   color: var(--muted);
@@ -796,8 +963,8 @@ select:focus {
 
 .day-date {
   display: block;
-  margin: 4px 0 15px;
-  font-size: 22px;
+  margin: 4px 0 12px;
+  font-size: 20px;
   font-weight: 750;
 }
 
@@ -805,9 +972,9 @@ select:focus {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
   margin-bottom: 8px;
-  padding: 9px;
+  padding: 7px 6px;
   border-radius: 10px;
   background: #f7f5fb;
   font-size: 11px;
@@ -821,23 +988,27 @@ select:focus {
 
 .day-task-actions {
   display: flex;
+  flex-direction: column;
   gap: 2px;
   opacity: 0;
   transition: opacity 0.15s ease;
 }
 
-.day-task:hover .day-task-actions {
+.day-task:hover .day-task-actions,
+.day-task:focus-within .day-task-actions {
   opacity: 1;
 }
 
 .day-task-actions button {
+  min-width: 26px;
+  min-height: 26px;
   border: none;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
   font-size: 13px;
   line-height: 1;
-  padding: 2px 5px;
+  padding: 2px 4px;
   border-radius: 6px;
 }
 
@@ -890,7 +1061,6 @@ select:focus {
   padding: 7px 8px;
   border-right: 1px solid #f0edf7;
   border-bottom: 1px solid #f0edf7;
-  cursor: pointer;
   transition: background 0.15s ease;
 }
 
@@ -900,7 +1070,6 @@ select:focus {
 
 .month-cell.empty {
   background: #fcfbfe;
-  cursor: default;
 }
 
 .month-cell.today {
@@ -908,10 +1077,22 @@ select:focus {
 }
 
 .month-daynum {
+  min-width: 26px;
+  min-height: 24px;
+  margin: 0 0 3px -3px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
   font-size: 12px;
   font-weight: 700;
   color: #44405a;
-  margin-bottom: 4px;
+}
+
+.month-daynum:hover {
+  background: #e9e2fa;
+  color: var(--lavender-dark);
 }
 
 .month-cell.today .month-daynum {
@@ -926,10 +1107,14 @@ select:focus {
 }
 
 .month-chip {
+  display: block;
+  width: 100%;
   min-width: 0;
   max-width: 100%;
   padding: 2px 6px;
+  border: 0;
   border-radius: 6px;
+  text-align: left;
   font-size: 10px;
   line-height: 1.4;
   white-space: nowrap;
@@ -955,9 +1140,20 @@ select:focus {
 }
 
 .month-more {
+  width: fit-content;
+  min-height: 24px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
   font-size: 10px;
   color: var(--muted);
-  padding: 1px 6px;
+}
+
+.month-more:hover {
+  background: #e9e2fa;
+  color: var(--lavender-dark);
 }
 
 .day-task time {
@@ -969,15 +1165,40 @@ select:focus {
 }
 
 .day-task-type {
-  display: inline-block;
-  margin-right: 4px;
+  display: block;
+  margin: 0 0 2px;
   color: var(--muted);
   font-size: 9px;
   font-weight: 700;
 }
 
+.day-task-title {
+  display: -webkit-box;
+  overflow: hidden;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 .day-task .response-pill {
   margin: 0 3px 0 0;
+}
+
+.week-more {
+  width: 100%;
+  min-height: 28px;
+  padding: 5px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--lavender-dark);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.week-more:hover {
+  background: var(--lavender-soft);
 }
 
 .day-empty {
@@ -1057,10 +1278,18 @@ dialog label {
 }
 
 .history-item {
+  width: 100%;
   padding: 12px;
+  border: 0;
   border-radius: 12px;
   background: #f8f6fc;
   cursor: pointer;
+  color: inherit;
+  text-align: left;
+}
+
+.history-item:hover {
+  background: #f0ebfa;
 }
 
 .history-item strong {
@@ -1314,6 +1543,11 @@ dialog label {
   opacity: 0;
 }
 
+.switch input:focus-visible + span {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
 .switch span {
   position: absolute;
   inset: 0;
@@ -1357,6 +1591,199 @@ dialog {
   border-radius: 22px;
   color: var(--ink);
   box-shadow: 0 30px 90px rgba(44, 31, 76, 0.3);
+}
+
+.search-dialog {
+  width: min(720px, calc(100vw - 48px));
+}
+
+.search-shell,
+.day-dialog-shell {
+  display: grid;
+  gap: 16px;
+  padding: 26px;
+}
+
+.global-search-field {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid #d8cee9;
+  border-radius: 14px;
+  background: #fbf9fe;
+  color: var(--lavender-dark);
+}
+
+.global-search-field:focus-within {
+  border-color: #9d86da;
+  box-shadow: 0 0 0 4px rgba(109, 81, 197, 0.1);
+}
+
+.global-search-field input {
+  min-width: 0;
+  padding: 6px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.global-search-field input:focus-visible {
+  outline: 0;
+}
+
+.search-summary {
+  min-height: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.search-results {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-height: 190px;
+  max-height: min(430px, 55vh);
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.search-result {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 13px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+}
+
+.search-result:hover,
+.search-result.active {
+  border-color: #ddd2ef;
+  background: #f5f1fc;
+}
+
+.search-result-kind {
+  min-width: 40px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  background: #e9f0fa;
+  color: #46638f;
+  font-size: 10px;
+  font-weight: 750;
+  text-align: center;
+}
+
+.search-result-kind.event {
+  background: var(--lavender-soft);
+  color: var(--lavender-dark);
+}
+
+.search-result-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.search-result-copy strong,
+.search-result-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-copy strong {
+  font-size: 13px;
+}
+
+.search-result-copy span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.search-result-arrow {
+  color: #998dab;
+  font-size: 11px;
+}
+
+.search-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  min-height: 190px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.search-empty > span {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 15px;
+  background: var(--lavender-soft);
+  color: var(--lavender-dark);
+  font-size: 22px;
+}
+
+.search-empty strong {
+  color: var(--ink);
+}
+
+.search-empty p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.search-footer {
+  display: flex;
+  gap: 16px;
+  padding-top: 3px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.day-dialog {
+  width: min(660px, calc(100vw - 48px));
+}
+
+.day-dialog-list {
+  align-content: start;
+  min-height: 150px;
+  max-height: min(500px, 58vh);
+  overflow-y: auto;
+  margin-top: 0;
+  padding: 2px;
+}
+
+.day-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+.dialog-status {
+  padding: 10px 12px;
+  border: 1px solid #efb8c4;
+  border-radius: 10px;
+  background: #fff4f6;
+  color: #a13d54;
+  font-size: 12px;
+}
+
+form[aria-busy="true"] {
+  cursor: progress;
 }
 
 dialog::backdrop {
@@ -1470,9 +1897,18 @@ dialog textarea {
 }
 
 @media (max-width: 1000px) {
+  .app-shell {
+    grid-template-columns: 210px 1fr;
+  }
+
+  .sidebar {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
   .content {
-    padding-right: 26px;
-    padding-left: 26px;
+    padding-right: 20px;
+    padding-left: 20px;
   }
 
   .hero-orb {
@@ -1480,10 +1916,32 @@ dialog textarea {
   }
 
   .week-board {
-    grid-template-columns: repeat(7, 140px);
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+
+  .day-card {
+    padding-right: 7px;
+    padding-left: 7px;
   }
 
   .sync-health-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (hover: none) {
+  .day-task-actions {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

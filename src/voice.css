@@ -4,7 +4,7 @@
     -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang TC",
     "Noto Sans TC", sans-serif;
   --ink: #302943;
-  --muted: #8b8499;
+  --muted: #746c82;
   --lavender: #8263dc;
   --lavender-dark: #6546bf;
   --lavender-soft: #eee9fb;
@@ -28,6 +28,8 @@ button {
 }
 
 .voice-card {
+  display: flex;
+  flex-direction: column;
   height: 490px;
   padding: 19px 21px 15px;
   overflow: hidden;
@@ -67,7 +69,7 @@ button {
 
 .identity span:not(.status-dot) {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .status-dot {
@@ -115,7 +117,7 @@ button {
   border: 0;
   border-radius: 50%;
   background: rgba(237, 233, 245, 0.8);
-  color: #8c849a;
+  color: #746c82;
   cursor: pointer;
   font-size: 20px;
   -webkit-app-region: no-drag;
@@ -136,7 +138,6 @@ button {
   padding: 0;
   border: 0;
   border-radius: 44% 52% 46% 55%;
-  outline: none;
   background: linear-gradient(145deg, #af98ef 7%, #7758d1 72%);
   box-shadow:
     0 19px 31px rgba(78, 53, 148, 0.26),
@@ -148,6 +149,14 @@ button {
 
 .voice-orb:hover {
   transform: translateY(-2px) scale(1.02);
+}
+
+.voice-orb[aria-disabled="true"] {
+  cursor: wait;
+}
+
+.voice-orb[aria-disabled="true"]:hover {
+  transform: none;
 }
 
 .voice-card[data-state="listening"] .voice-orb {
@@ -256,13 +265,20 @@ button {
 #prompt {
   margin: 12px 0 0;
   color: #6c6080;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
 }
 
 .conversation {
   display: grid;
+  min-height: 0;
+  max-height: 150px;
   gap: 8px;
+  padding: 3px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding: 3px;
+  user-select: text;
 }
 
 .speech-block {
@@ -289,13 +305,14 @@ button {
   position: absolute;
   right: 10px;
   bottom: 9px;
-  padding: 6px 10px;
+  min-height: 30px;
+  padding: 7px 10px;
   border: 1px solid rgba(216, 94, 109, 0.24);
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.9);
   color: #a43f4e;
   cursor: pointer;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -306,21 +323,19 @@ button {
 .speech-label {
   display: block;
   margin-bottom: 3px;
-  color: var(--lavender);
-  font-size: 9px;
+  color: var(--lavender-dark);
+  font-size: 11px;
   font-weight: 750;
   letter-spacing: 0.11em;
 }
 
 .speech-block p {
-  display: -webkit-box;
   margin: 0;
-  overflow: hidden;
   color: #544b65;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.5;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .examples {
@@ -334,17 +349,18 @@ button {
   width: 100%;
   margin-bottom: 1px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .examples button {
-  padding: 6px 8px;
+  min-height: 30px;
+  padding: 7px 10px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.76);
   color: #746b82;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .examples button:hover {
@@ -358,6 +374,30 @@ footer {
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid rgba(111, 84, 169, 0.1);
-  color: #aaa3b3;
-  font-size: 9px;
+  color: #756f80;
+  font-size: 11px;
+}
+
+:where(button, [tabindex]):focus-visible {
+  outline: 3px solid var(--lavender-dark);
+  outline-offset: 3px;
+}
+
+.conversation:focus-visible {
+  border-radius: 14px;
+  box-shadow: 0 0 0 3px rgba(101, 70, 191, 0.2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .voice-orb:hover {
+    transform: none;
+  }
 }
