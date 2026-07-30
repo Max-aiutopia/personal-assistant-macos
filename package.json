@@ -1,6 +1,6 @@
 {
   "name": "personal-glow-assistant",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "一個會提醒、記錄並陪伴你的桌面貼身小助理",
   "main": "src/main.js",
   "author": "Max",
@@ -14,6 +14,8 @@
     "test:voice": "node scripts/voice-command-test.js",
     "test:calendar": "node scripts/calendar-sync-test.js",
     "test:store": "node scripts/store-test.js",
+    "test:month": "node scripts/month-view-test.js",
+    "test:journal": "node scripts/journal-merge-test.js",
     "smoke": "node scripts/smoke-test.js",
     "package": "npm run build:helpers && electron-packager . 貼身小秘書 --platform=darwin --arch=arm64 --out=dist --overwrite --icon=assets/app-icon.icns --app-bundle-id=com.max.personalglowassistant --extend-info=build/Info.plist --extra-resource=build/VoiceRecognizer.app --extra-resource=build/CalendarBridge.app --ignore='^/dist($|/)' --ignore='^/build/VoiceRecognizer.app($|/)' --ignore='^/build/CalendarBridge.app($|/)' && npm run sign",
     "sign": "codesign --force --deep --sign \"Glow Secretary Local Signing\" 'dist/貼身小秘書-darwin-arm64/貼身小秘書.app'",

@@ -768,10 +768,24 @@ function registerIpc() {
     if (Number(data?.revision) !== previous.revision) {
       return { ...previous, _saveConflict: true };
     }
-    const saved = store.write(data);
+    const saved = store.writeDurable(data);
     sendDataChanged(saved);
     scheduleCalendarSync();
     return saved;
+  });
+  ipcMain.on("data:save-sync", (event, data) => {
+    try {
+      const previous = store.read();
+      if (Number(data?.revision) !== previous.revision) {
+        event.returnValue = { ...previous, _saveConflict: true };
+        return;
+      }
+      const saved = store.writeDurable(data);
+      sendDataChanged(saved);
+      event.returnValue = saved;
+    } catch (error) {
+      event.returnValue = { _saveError: error.message || "資料無法落盤。" };
+    }
   });
   ipcMain.handle("data:path", () => store.dataPath);
   ipcMain.handle("settings:login", (_, enabled) => {
@@ -810,7 +824,7 @@ function registerIpc() {
     }
     const current = store.read();
     current.settings.voiceShortcut = preferred;
-    const saved = store.write(current);
+    const saved = store.writeDurable(current);
     sendDataChanged(saved);
     return rebuildShortcut(preferred);
   });
@@ -875,7 +889,7 @@ function registerIpc() {
 
     const mutation = calendarVoiceMutation(current, result.data);
     const didChangeData = persistedContentSignature(current) !== persistedContentSignature(result.data);
-    const saved = didChangeData ? store.write(result.data) : current;
+    const saved = didChangeData ? store.writeDurable(result.data) : current;
     if (didChangeData) sendDataChanged(saved);
 
     let response = result.response;
@@ -1040,7 +1054,21 @@ app.on("second-instance", () => {
   showMainWindow("today");
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  try {
+    store?.flush?.({ throwOnError: true });
+  } catch (error) {
+    event.preventDefault();
+    isQuitting = false;
+    writeDiagnostic("before-quit-flush", error);
+    try {
+      new Notification({
+        title: "資料尚未安全保存",
+        body: "貼身小秘書已暫停關閉，請保留 App 開啟後再試一次。"
+      }).show();
+    } catch {}
+    return;
+  }
   isQuitting = true;
   clearInterval(reminderTimer);
   clearInterval(calendarSyncTimer);
@@ -1048,9 +1076,6 @@ app.on("before-quit", () => {
   clearInterval(shortcutRetryTimer);
   clearTimeout(calendarSyncDebounce);
   stopNativeVoiceRecognition();
-  try {
-    store?.flush?.();
-  } catch {}
 });
 
 app.on("will-quit", () => {

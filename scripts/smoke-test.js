@@ -3,6 +3,7 @@ const TEST_TASK_TITLE = "__貼身小秘書互動測試__";
 const TEST_EVENT_TITLE = "__行事曆類型測試__";
 const TEST_CROSS_EVENT_TITLE = "__跨午夜行程測試__";
 const TEST_OVERDUE_TITLE = "__逾期待辦整理測試__";
+const TEST_ROUTINE_TITLE = "__固定安排收合測試__";
 const TEST_JOURNAL_MARKER = "__日誌保存測試__";
 
 function wait(ms) {
@@ -99,7 +100,7 @@ async function main() {
       existing.settings.reminderSyncEnabled = false;
       existing.settings.voiceBrain = 'rules';
       existing.settings.aiVoiceEnabled = false;
-      existing.tasks = existing.tasks.filter((task) => ![${JSON.stringify(TEST_TASK_TITLE)}, ${JSON.stringify(TEST_EVENT_TITLE)}, ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, ${JSON.stringify(TEST_OVERDUE_TITLE)}].includes(task.title));
+      existing.tasks = existing.tasks.filter((task) => ![${JSON.stringify(TEST_TASK_TITLE)}, ${JSON.stringify(TEST_EVENT_TITLE)}, ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, ${JSON.stringify(TEST_OVERDUE_TITLE)}, ${JSON.stringify(TEST_ROUTINE_TITLE)}].includes(task.title));
       await window.assistantAPI.saveData(existing);
       document.querySelector('#quick-add-button').click();
       document.querySelector('#task-title').value = ${JSON.stringify(TEST_TASK_TITLE)};
@@ -125,6 +126,21 @@ async function main() {
         document.querySelector('#reminder-list-select') &&
         document.querySelector('#sync-calendar-button')
       );
+      const generalTab = document.querySelector('[data-settings-tab="general"]');
+      generalTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      const settingsTabsAccessible =
+        document.querySelector('[data-settings-tab="sync"]').getAttribute('aria-selected') === 'true' &&
+        !document.querySelector('[data-settings-panel="sync"]').hidden &&
+        document.querySelectorAll('[data-settings-panel]:not([hidden])').length === 1;
+      generalTab.click();
+      const nameInput = document.querySelector('#user-name-input');
+      const savedNameDraft = nameInput.value;
+      nameInput.value = '__背景更新保護__';
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+      renderSettings();
+      const settingsDraftPreserved = nameInput.value === '__背景更新保護__';
+      nameInput.value = savedNameDraft;
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }));
       document.querySelector('#quick-add-button').style.display = '';
       document.querySelector('#quick-add-button').click();
       const kind = document.querySelector('#task-kind');
@@ -169,6 +185,33 @@ async function main() {
         completedAt: null,
         updatedAt: new Date().toISOString()
       });
+      const routineYear = new Date().getFullYear();
+      const routineMonth = new Date().getMonth();
+      for (let day = 1; day <= 12; day += 1) {
+        const startDate = new Date(routineYear, routineMonth, day);
+        const endDate = new Date(routineYear, routineMonth, day + 1);
+        withOverdue.tasks.push({
+          id: 'routine-smoke-' + day,
+          title: ${JSON.stringify(TEST_ROUTINE_TITLE)},
+          date: startDate.toLocaleDateString('en-CA'),
+          reminderTime: '23:45',
+          endDate: endDate.toLocaleDateString('en-CA'),
+          endTime: '08:45',
+          kind: 'event',
+          category: '健康',
+          notes: '',
+          completed: false,
+          createdAt: new Date().toISOString(),
+          completedAt: null,
+          updatedAt: new Date().toISOString(),
+          external: {
+            provider: 'eventkit',
+            type: 'event',
+            calendarId: 'routine-smoke-calendar',
+            id: 'routine-smoke-series/RID=' + String(day).padStart(9, '0')
+          }
+        });
+      }
       await window.assistantAPI.saveData(withOverdue);
       await new Promise((resolve) => setTimeout(resolve, 150));
       const latest = await window.assistantAPI.getData();
@@ -178,6 +221,20 @@ async function main() {
       const monthDays = monthGrid.querySelector('.month-days');
       const monthHeaders = [...monthGrid.querySelectorAll('.month-weekday')];
       const monthCells = [...monthDays.querySelectorAll(':scope > .month-cell')];
+      const focusRoutineTrack = [...monthGrid.querySelectorAll('.month-routine-track')]
+        .some((item) => item.textContent.includes(${JSON.stringify(TEST_ROUTINE_TITLE)}));
+      const focusHidesRoutineChips = ![...monthGrid.querySelectorAll('.month-chip')]
+        .some((item) => item.textContent.includes(${JSON.stringify(TEST_ROUTINE_TITLE)}));
+      document.querySelector('[data-month-view="all"]').click();
+      const allShowsRoutineChips = [...monthGrid.querySelectorAll('.month-chip')]
+        .some((item) => item.textContent.includes(${JSON.stringify(TEST_ROUTINE_TITLE)}));
+      document.querySelector('[data-month-view="focus"]').click();
+      const firstRealMonthCell = [...monthGrid.querySelectorAll('.month-cell:not(.empty)')][0];
+      const separateDateActions = Boolean(
+        firstRealMonthCell.querySelector('[data-day-agenda]') &&
+        firstRealMonthCell.querySelector('[data-month-add-date]') &&
+        firstRealMonthCell.querySelector('[data-day-agenda]') !== firstRealMonthCell.querySelector('[data-month-add-date]')
+      );
       const firstWeekCells = monthCells.slice(0, 7);
       const layoutProbe = document.createElement('div');
       layoutProbe.className = 'month-chip event';
@@ -234,10 +291,16 @@ async function main() {
         statusReady: Boolean(status.authorization),
         calendarHelperNotTopLevel: !String(status.bundle?.path || '').startsWith('/Applications/貼身小秘書同步.app'),
         settingsReady,
+        settingsTabsAccessible,
+        settingsDraftPreserved,
         endTimeVisible,
         eventKind: event?.kind,
         eventEndTime: event?.endTime,
         monthLayout,
+        focusRoutineTrack,
+        focusHidesRoutineChips,
+        allShowsRoutineChips,
+        separateDateActions,
         monthDialogDeleteVisible,
         eventInTaskList,
         overdueVisible,
@@ -251,6 +314,8 @@ async function main() {
       !calendarUi.statusReady ||
       !calendarUi.calendarHelperNotTopLevel ||
       !calendarUi.settingsReady ||
+      !calendarUi.settingsTabsAccessible ||
+      !calendarUi.settingsDraftPreserved ||
       !calendarUi.endTimeVisible ||
       calendarUi.eventKind !== "event" ||
       calendarUi.eventEndTime !== "15:00" ||
@@ -260,6 +325,10 @@ async function main() {
       !calendarUi.monthLayout.saturdayVisible ||
       !calendarUi.monthLayout.noHorizontalOverflow ||
       !calendarUi.monthLayout.insideViewport ||
+      !calendarUi.focusRoutineTrack ||
+      !calendarUi.focusHidesRoutineChips ||
+      !calendarUi.allShowsRoutineChips ||
+      !calendarUi.separateDateActions ||
       !calendarUi.monthDialogDeleteVisible ||
       calendarUi.eventInTaskList ||
       !calendarUi.overdueVisible ||
@@ -326,11 +395,13 @@ async function main() {
       const date = new Date().toLocaleDateString('en-CA');
       const before = await window.assistantAPI.getData();
       const originalJournal = before.journal[date];
+      document.querySelector('[data-route="today"]').click();
+      const quickJournal = document.querySelector('#today-quick-journal');
+      quickJournal.value = ${JSON.stringify(TEST_JOURNAL_MARKER)};
+      quickJournal.dispatchEvent(new Event('input', { bubbles: true }));
       document.querySelector('[data-route="journal"]').click();
-      document.querySelector('#journal-date').value = date;
-      document.querySelector('#journal-done').value = ${JSON.stringify(TEST_JOURNAL_MARKER)};
-      document.querySelector('#save-journal-button').click();
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      const immediateLoaded = document.querySelector('#journal-done').value === ${JSON.stringify(TEST_JOURNAL_MARKER)};
+      await new Promise((resolve) => setTimeout(resolve, 900));
       const latest = await window.assistantAPI.getData();
       const ok = latest.journal[date]?.done === ${JSON.stringify(TEST_JOURNAL_MARKER)};
       if (originalJournal) latest.journal[date] = originalJournal;
@@ -338,25 +409,28 @@ async function main() {
       latest.tasks = latest.tasks.filter((task) => ![${JSON.stringify(TEST_TASK_TITLE)}, ${JSON.stringify(TEST_EVENT_TITLE)}, ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, ${JSON.stringify(TEST_OVERDUE_TITLE)}].includes(task.title));
       await window.assistantAPI.saveData(latest);
       await window.assistantAPI.openMain('today');
-      return ok;
+      return immediateLoaded && ok;
     })()`);
     if (!journalSaved) throw new Error("日誌內容未保存");
 
     console.log("✓ 主畫面初始化");
     console.log("✓ 新增與完成待辦");
     console.log("✓ 日誌保存");
+    console.log("✓ 日誌快速輸入立即帶入完整編輯器");
     console.log("✓ 語音辨識、朗讀與待辦查詢");
     console.log("✓ 行程與待辦分流");
     console.log("✓ 跨午夜行程延續顯示");
     console.log("✓ 刪除後復原");
     console.log("✓ 逾期待辦整理");
     console.log("✓ 同步健康狀態");
+    console.log("✓ 設定分類鍵盤操作與草稿保護");
+    console.log("✓ 月曆重點／全部模式與固定安排收合");
     console.log("互動測試全部通過");
   } finally {
     if (originalSyncSettings) {
       await mainClient.evaluate(`(async () => {
         const latest = await window.assistantAPI.getData();
-        latest.tasks = latest.tasks.filter((task) => ![${JSON.stringify(TEST_TASK_TITLE)}, ${JSON.stringify(TEST_EVENT_TITLE)}, ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, ${JSON.stringify(TEST_OVERDUE_TITLE)}].includes(task.title));
+        latest.tasks = latest.tasks.filter((task) => ![${JSON.stringify(TEST_TASK_TITLE)}, ${JSON.stringify(TEST_EVENT_TITLE)}, ${JSON.stringify(TEST_CROSS_EVENT_TITLE)}, ${JSON.stringify(TEST_OVERDUE_TITLE)}, ${JSON.stringify(TEST_ROUTINE_TITLE)}].includes(task.title));
         latest.settings.calendarSyncEnabled = ${JSON.stringify(originalSyncSettings.calendarSyncEnabled)};
         latest.settings.reminderSyncEnabled = ${JSON.stringify(originalSyncSettings.reminderSyncEnabled)};
         latest.settings.voiceBrain = ${JSON.stringify(originalSyncSettings.voiceBrain)};

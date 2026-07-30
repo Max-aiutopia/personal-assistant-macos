@@ -1,9 +1,17 @@
 const { contextBridge, ipcRenderer } = require("electron");
-const { dateKey, addDays } = require("./utils");
+const {
+  dateKey,
+  addDays,
+  foldableRoutineCandidates,
+  isFoldableRoutine,
+  buildDateItemIndex,
+  mergeJournalPatch
+} = require("./utils");
 
 contextBridge.exposeInMainWorld("assistantAPI", {
   getData: () => ipcRenderer.invoke("data:get"),
   saveData: (data) => ipcRenderer.invoke("data:save", data),
+  saveDataSync: (data) => ipcRenderer.sendSync("data:save-sync", data),
   getDataPath: () => ipcRenderer.invoke("data:path"),
   setLaunchAtLogin: (enabled) => ipcRenderer.invoke("settings:login", enabled),
   testNotification: () => ipcRenderer.invoke("notification:test"),
@@ -26,7 +34,14 @@ contextBridge.exposeInMainWorld("assistantAPI", {
   syncCalendars: () => ipcRenderer.invoke("calendar:sync"),
   openInternetAccounts: () => ipcRenderer.invoke("calendar:open-accounts"),
   showDataFile: () => ipcRenderer.invoke("shell:show-data"),
-  dateUtils: { dateKey, addDays },
+  dateUtils: {
+    dateKey,
+    addDays,
+    foldableRoutineCandidates,
+    isFoldableRoutine,
+    buildDateItemIndex,
+    mergeJournalPatch
+  },
   onDataChanged: (callback) => {
     const handler = (_, data) => callback(data);
     ipcRenderer.on("data-changed", handler);

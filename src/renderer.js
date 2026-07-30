@@ -15,8 +15,12 @@ let data = {
 let activeRoute = "today";
 let taskFilter = "open";
 let monthCursor = new Date(); // 月檢視目前顯示的月份（任一日即可）
+let monthViewMode = "focus";
 let selectedMood = "";
-let quickJournalTimer;
+let journalAutosaveTimer = null;
+let journalSaveInFlight = null;
+let activeJournalDate = "";
+const journalDrafts = new Map();
 let undoCountdownTimer;
 let calendarStatus = null;
 let lastPersistedData = null;
@@ -28,6 +32,10 @@ let dayDialogReturnFocus = null;
 let agendaDate = "";
 let searchResultIds = [];
 let searchActiveIndex = -1;
+const SETTINGS_SECTIONS = ["general", "sync", "voice", "advanced"];
+let activeSettingsSection = "general";
+let settingsDirty = false;
+let settingsHydrated = false;
 const UNDO_WINDOW_MS = 10_000;
 const ROUTES = ["today", "tasks", "week", "month", "journal", "settings"];
 
@@ -195,11 +203,39 @@ function replayObjectDelta(baseObject = {}, intendedObject = {}, latestObject = 
   return merged;
 }
 
+function replayJournalDelta(baseJournal = {}, intendedJournal = {}, latestJournal = {}) {
+  const merged = { ...latestJournal };
+  for (const date of Object.keys(baseJournal)) {
+    if (!Object.prototype.hasOwnProperty.call(intendedJournal, date)) delete merged[date];
+  }
+  for (const [date, entry] of Object.entries(intendedJournal)) {
+    if (!Object.prototype.hasOwnProperty.call(baseJournal, date)) {
+      merged[date] = cloneData(entry);
+      continue;
+    }
+    if (!valuesEqual(entry, baseJournal[date])) {
+      const patch = {};
+      for (const field of ["done", "feeling", "tomorrow", "mood"]) {
+        if (!valuesEqual(entry?.[field] || "", baseJournal[date]?.[field] || "")) {
+          patch[field] = entry?.[field] || "";
+        }
+      }
+      const merge = dateUtils.mergeJournalPatch || fallbackMergeJournalPatch;
+      const result = merge(baseJournal[date], patch, latestJournal[date] || {});
+      if (result.conflicts.length) {
+        throw new Error("日誌內容同時被其他操作更新，請確認後再保存。");
+      }
+      merged[date] = result.entry;
+    }
+  }
+  return merged;
+}
+
 function replayRendererDelta(base, intended, latest) {
   const merged = withoutSaveConflict(latest);
   merged.tasks = replayArrayDelta(base.tasks, intended.tasks, merged.tasks);
   merged.trash = replayArrayDelta(base.trash, intended.trash, merged.trash);
-  merged.journal = replayObjectDelta(base.journal, intended.journal, merged.journal);
+  merged.journal = replayJournalDelta(base.journal, intended.journal, merged.journal);
   merged.settings = replayObjectDelta(base.settings, intended.settings, merged.settings);
   return merged;
 }
@@ -215,6 +251,240 @@ function rememberServerData(nextData) {
     lastPersistedData = cloneData(clean);
   }
   return cloneData(lastPersistedData || clean);
+}
+
+function applyJournalPatch(entry = {}, patch = {}) {
+  return {
+    ...entry,
+    ...patch,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function overlayJournalDrafts(targetData) {
+  const result = cloneData(targetData || data);
+  result.journal = { ...(result.journal || {}) };
+  for (const [date, draft] of journalDrafts) {
+    result.journal[date] = applyJournalPatch(result.journal[date] || {}, draft.patch);
+  }
+  return result;
+}
+
+function journalStatusMessage(state) {
+  if (state === "dirty") return "正在等待自動保存…";
+  if (state === "saving") return "正在保存…";
+  if (state === "error") return "保存失敗，內容仍保留";
+  if (state === "conflict") return "內容同時被更新，請確認後再保存";
+  return "所有內容都已保存";
+}
+
+function setJournalStatus(date, state = "saved", messageOverride = "") {
+  const message = messageOverride || journalStatusMessage(state);
+  const selectors = [];
+  if (date === localDateKey()) selectors.push("#journal-save-status");
+  if (date === activeJournalDate) selectors.push("#full-journal-status");
+  for (const selector of selectors) {
+    const status = $(selector);
+    if (!status) continue;
+    status.textContent = message;
+    status.classList.toggle("saving", state === "dirty" || state === "saving");
+    status.classList.toggle("saved", state === "saved");
+    status.classList.toggle("error", state === "error");
+    status.classList.toggle("conflict", state === "conflict");
+    status.setAttribute("aria-live", state === "error" || state === "conflict" ? "assertive" : "polite");
+  }
+  if (date === activeJournalDate) {
+    const button = $("#save-journal-button");
+    if (button) {
+      button.disabled = state === "saving";
+      button.textContent = state === "conflict"
+        ? "保留我的版本並保存"
+        : state === "error"
+          ? "重新嘗試"
+          : "立即保存";
+    }
+  }
+}
+
+function getOrCreateJournalDraft(date) {
+  let draft = journalDrafts.get(date);
+  if (draft) return draft;
+  const baseEntry =
+    lastPersistedData?.journal?.[date] ||
+    data.journal?.[date] ||
+    {};
+  draft = {
+    baseEntry: cloneData(baseEntry),
+    patch: {},
+    version: 0,
+    state: "saved",
+    conflicts: []
+  };
+  journalDrafts.set(date, draft);
+  return draft;
+}
+
+function scheduleJournalAutosave(delay = 650) {
+  clearTimeout(journalAutosaveTimer);
+  journalAutosaveTimer = setTimeout(() => {
+    journalAutosaveTimer = null;
+    void flushJournalAutosave();
+  }, delay);
+}
+
+function stageJournalPatch(date, patch) {
+  if (!parseDate(date) || !patch || typeof patch !== "object") return;
+  const draft = getOrCreateJournalDraft(date);
+  for (const [field, value] of Object.entries(patch)) {
+    if (!["done", "feeling", "tomorrow", "mood"].includes(field)) continue;
+    draft.patch[field] = String(value || "");
+  }
+  draft.version += 1;
+  draft.state = "dirty";
+  draft.conflicts = [];
+  data.journal = { ...(data.journal || {}) };
+  const serverEntry = lastPersistedData?.journal?.[date] || data.journal[date] || {};
+  data.journal[date] = applyJournalPatch(serverEntry, draft.patch);
+  setJournalStatus(date, "dirty");
+  scheduleJournalAutosave();
+}
+
+function fallbackMergeJournalPatch(baseEntry, patch, remoteEntry) {
+  const entry = { ...remoteEntry };
+  const conflicts = [];
+  for (const field of ["done", "feeling", "tomorrow", "mood"]) {
+    if (!Object.prototype.hasOwnProperty.call(patch, field)) continue;
+    const baseValue = String(baseEntry?.[field] || "");
+    const localValue = String(patch[field] || "");
+    const remoteValue = String(remoteEntry?.[field] || "");
+    if (remoteValue === baseValue || remoteValue === localValue) entry[field] = localValue;
+    else conflicts.push(field);
+  }
+  if (!conflicts.length) entry.updatedAt = new Date().toISOString();
+  return { entry, conflicts };
+}
+
+async function flushJournalAutosave() {
+  clearTimeout(journalAutosaveTimer);
+  journalAutosaveTimer = null;
+  if (journalSaveInFlight) return journalSaveInFlight;
+
+  const snapshots = new Map(
+    [...journalDrafts.entries()]
+      .filter(([, draft]) => ["dirty", "error"].includes(draft.state))
+      .map(([date, draft]) => [
+        date,
+        {
+          baseEntry: cloneData(draft.baseEntry),
+          patch: cloneData(draft.patch),
+          version: draft.version
+        }
+      ])
+  );
+  if (!snapshots.size) return true;
+
+  journalSaveInFlight = (async () => {
+    const merge = dateUtils.mergeJournalPatch || fallbackMergeJournalPatch;
+    const saveable = new Map();
+    for (const [date, snapshot] of snapshots) {
+      const currentDraft = journalDrafts.get(date);
+      if (!currentDraft) continue;
+      currentDraft.state = "saving";
+      setJournalStatus(date, "saving");
+      const remoteEntry = lastPersistedData?.journal?.[date] || {};
+      const result = merge(snapshot.baseEntry, snapshot.patch, remoteEntry);
+      if (result.conflicts.length) {
+        currentDraft.state = "conflict";
+        currentDraft.conflicts = result.conflicts;
+        setJournalStatus(date, "conflict");
+        continue;
+      }
+      saveable.set(date, result.entry);
+    }
+
+    if (!saveable.size) return false;
+    data.journal = { ...(data.journal || {}) };
+    for (const [date] of journalDrafts) {
+      data.journal[date] = cloneData(lastPersistedData?.journal?.[date] || {});
+    }
+    for (const [date, entry] of saveable) data.journal[date] = cloneData(entry);
+
+    try {
+      await persist();
+      for (const [date, snapshot] of snapshots) {
+        const draft = journalDrafts.get(date);
+        if (!draft || draft.state === "conflict") continue;
+        if (draft.version === snapshot.version) {
+          journalDrafts.delete(date);
+          const time = new Intl.DateTimeFormat("zh-TW", {
+            hour: "2-digit",
+            minute: "2-digit"
+          }).format(new Date());
+          setJournalStatus(date, "saved", `已保存 ${time}`);
+        } else {
+          draft.baseEntry = cloneData(lastPersistedData?.journal?.[date] || {});
+          draft.state = "dirty";
+          setJournalStatus(date, "dirty");
+        }
+      }
+      data = overlayJournalDrafts(lastPersistedData || data);
+      scheduleRender();
+      return true;
+    } catch (error) {
+      for (const [date] of saveable) {
+        const draft = journalDrafts.get(date);
+        if (!draft) continue;
+        draft.state = "error";
+        setJournalStatus(date, "error");
+      }
+      data = overlayJournalDrafts(lastPersistedData || data);
+      scheduleJournalAutosave(3000);
+      console.error("日誌自動保存失敗：", error);
+      return false;
+    }
+  })().finally(() => {
+    journalSaveInFlight = null;
+    if ([...journalDrafts.values()].some((draft) => draft.state === "dirty")) {
+      scheduleJournalAutosave();
+    }
+  });
+
+  return journalSaveInFlight;
+}
+
+function flushJournalBeforeUnload(event) {
+  if (!journalDrafts.size || !api?.saveDataSync) return;
+  const merge = dateUtils.mergeJournalPatch || fallbackMergeJournalPatch;
+  const candidate = cloneData(lastPersistedData || data);
+  candidate.journal = { ...(candidate.journal || {}) };
+  for (const [date, draft] of journalDrafts) {
+    const remoteEntry = lastPersistedData?.journal?.[date] || {};
+    const result = merge(draft.baseEntry, draft.patch, remoteEntry);
+    if (result.conflicts.length) {
+      draft.state = "conflict";
+      setJournalStatus(date, "conflict");
+      event.preventDefault();
+      event.returnValue = "";
+      return;
+    }
+    candidate.journal[date] = result.entry;
+  }
+  const saved = api.saveDataSync(candidate);
+  if (saved?._saveError || saved?._saveConflict) {
+    if (saved?._saveConflict) {
+      rememberServerData(saved);
+      data = overlayJournalDrafts(lastPersistedData || data);
+    }
+    for (const [date, draft] of journalDrafts) {
+      draft.state = saved?._saveConflict ? "conflict" : "error";
+      setJournalStatus(date, draft.state);
+    }
+    event.preventDefault();
+    event.returnValue = "";
+    return;
+  }
+  rememberServerData(saved);
+  journalDrafts.clear();
 }
 
 async function persist() {
@@ -253,7 +523,7 @@ async function persist() {
   } finally {
     pendingPersistCount = Math.max(0, pendingPersistCount - 1);
     if (succeeded && pendingPersistCount === 0 && lastPersistedData) {
-      data = cloneData(lastPersistedData);
+      data = overlayJournalDrafts(lastPersistedData);
       scheduleRender();
     }
   }
@@ -299,7 +569,11 @@ function greeting() {
 
 function navigate(route, { focusHeading = false } = {}) {
   if (!ROUTES.includes(route)) route = "today";
+  const previousRoute = activeRoute;
   const routeChanged = activeRoute !== route;
+  if (routeChanged && ["today", "journal"].includes(previousRoute)) {
+    void flushJournalAutosave();
+  }
   activeRoute = route;
   $$(".nav-item").forEach((button) => {
     const isActive = button.dataset.route === route;
@@ -762,6 +1036,19 @@ function renderWeek() {
   $("#week-board").innerHTML = cards.join("");
 }
 
+function sortedMonthItems(items, displayDate) {
+  return [...items].sort((left, right) => {
+    if (left.completed !== right.completed) return Number(left.completed) - Number(right.completed);
+    const leftTime = isEvent(left) && left.date !== displayDate
+      ? left.endTime || "00:00"
+      : left.reminderTime || "99:99";
+    const rightTime = isEvent(right) && right.date !== displayDate
+      ? right.endTime || "00:00"
+      : right.reminderTime || "99:99";
+    return `${leftTime}${left.title || ""}`.localeCompare(`${rightTime}${right.title || ""}`, "zh-TW");
+  });
+}
+
 function renderMonth() {
   const grid = $("#month-grid");
   if (!grid) return;
@@ -773,6 +1060,17 @@ function renderMonth() {
   const firstWeekday = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const todayKey = localDateKey();
+  const startKey = localDateKey(new Date(year, month, 1));
+  const endKey = localDateKey(new Date(year, month, daysInMonth));
+  const dateIndex = dateUtils.buildDateItemIndex
+    ? dateUtils.buildDateItemIndex(data.tasks, startKey, endKey)
+    : {};
+  const foldableKeys = new Set(
+    dateUtils.foldableRoutineCandidates
+      ? dateUtils.foldableRoutineCandidates(data.tasks, startKey, endKey)
+      : []
+  );
+  let foldedOccurrenceCount = 0;
 
   const weekdays = ["日", "一", "二", "三", "四", "五", "六"]
     .map((w) => `<div class="month-weekday" aria-hidden="true">${w}</div>`)
@@ -786,14 +1084,22 @@ function renderMonth() {
   for (let day = 1; day <= daysInMonth; day += 1) {
     const date = new Date(year, month, day);
     const key = localDateKey(date);
-    const dayItems = sortedTasks(
-      data.tasks.filter(
-        (task) =>
-          (isEvent(task) && eventOccursOnDate(task, key)) ||
-          (isReminder(task) && task.date === key)
-      )
+    const indexedItems = dateIndex[key] || data.tasks.filter(
+      (task) =>
+        (isEvent(task) && eventOccursOnDate(task, key)) ||
+        (isReminder(task) && task.date === key)
     );
-    const chips = dayItems
+    const dayItems = sortedMonthItems(indexedItems, key);
+    const routineItems = monthViewMode === "focus"
+      ? dayItems.filter((task) =>
+          Boolean(dateUtils.isFoldableRoutine?.(task, foldableKeys))
+        )
+      : [];
+    const priorityItems = routineItems.length
+      ? dayItems.filter((task) => !dateUtils.isFoldableRoutine(task, foldableKeys))
+      : dayItems;
+    foldedOccurrenceCount += routineItems.length;
+    const chips = priorityItems
       .slice(0, 4)
       .map(
         (task) => `
@@ -804,28 +1110,65 @@ function renderMonth() {
             title="${escapeHtml(task.title)}"
             aria-label="編輯「${escapeHtml(task.title)}」，${escapeHtml(formatDate(key, { month: "long", day: "numeric" }))}"
           >
-            ${task.reminderTime ? `<time>${task.reminderTime}</time> ` : ""}${escapeHtml(task.title)}
+            ${
+              isEvent(task)
+                ? `<time>${escapeHtml(eventTimeLabel(task, key))}</time> `
+                : task.reminderTime
+                  ? `<time>${escapeHtml(task.reminderTime)}</time> `
+                  : ""
+            }${escapeHtml(task.title)}
           </button>`
       )
       .join("");
     const more =
-      dayItems.length > 4
-        ? `<button type="button" class="month-more" data-day-agenda="${key}" aria-label="查看${escapeHtml(formatDate(key, { month: "long", day: "numeric" }))}全部 ${dayItems.length} 項安排">＋${dayItems.length - 4}</button>`
+      priorityItems.length > 4
+        ? `<button type="button" class="month-more" data-day-agenda="${key}" aria-label="查看${escapeHtml(formatDate(key, { month: "long", day: "numeric" }))}全部 ${dayItems.length} 項安排">其餘 ${priorityItems.length - 4} 項</button>`
         : "";
+    const routineTitles = [...new Set(routineItems.map((task) => task.title).filter(Boolean))];
+    const routineLabel = routineTitles.length === 1
+      ? `固定 · ${routineTitles[0]}${routineItems.length > 1 ? ` ×${routineItems.length}` : ""}`
+      : `固定安排 ${routineItems.length} 項`;
+    const routineTrack = routineItems.length
+      ? `<button type="button" class="month-routine-track" data-day-agenda="${key}" aria-label="查看${escapeHtml(formatDate(key, { month: "long", day: "numeric" }))}${routineItems.length}筆固定安排">${escapeHtml(routineLabel)}</button>`
+      : "";
+    const dateLabel = escapeHtml(formatDate(key, {
+      month: "long",
+      day: "numeric",
+      weekday: "long"
+    }));
     cells.push(`
-      <div class="month-cell ${key === todayKey ? "today" : ""}">
-        <button
-          type="button"
-          class="month-daynum"
-          data-month-add-date="${key}"
-          aria-label="${escapeHtml(formatDate(key, { month: "long", day: "numeric", weekday: "long" }))}，新增事項"
-        >${day}</button>
-        <div class="month-chips">${chips}${more}</div>
+      <div class="month-cell ${key === todayKey ? "today" : ""}" aria-label="${dateLabel}">
+        <div class="month-day-header">
+          <button
+            type="button"
+            class="month-daynum"
+            data-day-agenda="${key}"
+            aria-label="查看${dateLabel}全部安排"
+          >${day}</button>
+          <button
+            type="button"
+            class="month-day-add"
+            data-month-add-date="${key}"
+            aria-label="${dateLabel}，新增事項"
+          >＋</button>
+        </div>
+        <div class="month-chips">${chips}${more}${routineTrack}</div>
       </div>
     `);
   }
 
   grid.innerHTML = `<div class="month-weekdays">${weekdays}</div><div class="month-days">${cells.join("")}</div>`;
+  $$("#month-view-mode [data-month-view]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.monthView === monthViewMode));
+  });
+  const summary = $("#month-view-summary");
+  if (summary) {
+    summary.textContent = monthViewMode === "focus"
+      ? foldedOccurrenceCount
+        ? `重點模式收合 ${foldedOccurrenceCount} 筆固定安排；點日期或「固定」可查看完整內容。`
+        : "重點模式：這個月沒有可安全收合的高頻固定安排。"
+      : "全部模式：逐筆顯示所有安排，日期可開啟完整清單。";
+  }
 }
 
 function handleMonthClick(event) {
@@ -848,12 +1191,13 @@ function handleMonthClick(event) {
 
 function renderDayDialog() {
   if (!agendaDate) return;
-  const items = sortedTasks(
+  const items = sortedMonthItems(
     data.tasks.filter(
       (task) =>
         (isEvent(task) && eventOccursOnDate(task, agendaDate)) ||
         (isReminder(task) && task.date === agendaDate)
-    )
+    ),
+    agendaDate
   );
   $("#day-dialog-title").textContent = formatDate(agendaDate, {
     month: "long",
@@ -895,47 +1239,139 @@ function renderJournalHistory() {
     : '<div class="empty-state"><div>還沒有日誌<br />今天就寫下第一篇吧</div></div>';
 }
 
-function resolveVoiceBrain() {
-  const brain = data.settings.voiceBrain;
+function resolveVoiceBrain(settings = data.settings) {
+  const brain = settings.voiceBrain;
   if (brain === "claude" || brain === "ollama" || brain === "rules") return brain;
-  return data.settings.aiVoiceEnabled ? "ollama" : "rules";
+  return settings.aiVoiceEnabled ? "ollama" : "rules";
+}
+
+function settingsProjection(settings = {}) {
+  const voiceBrain = resolveVoiceBrain(settings);
+  return {
+    userName: String(settings.userName || ""),
+    assistantName: String(settings.assistantName || "小光"),
+    dailyBriefTime: String(settings.dailyBriefTime || "09:00"),
+    notificationsEnabled: settings.notificationsEnabled !== false,
+    launchAtLogin: Boolean(settings.launchAtLogin),
+    voiceAutoListen: settings.voiceAutoListen !== false,
+    voiceReplyEnabled: settings.voiceReplyEnabled !== false,
+    voiceAutoHide: settings.voiceAutoHide !== false,
+    calendarSyncEnabled: Boolean(settings.calendarSyncEnabled),
+    reminderSyncEnabled: Boolean(settings.reminderSyncEnabled),
+    calendarId: String(settings.calendarId || ""),
+    reminderListId: String(settings.reminderListId || ""),
+    voiceBrain,
+    aiVoiceEnabled: voiceBrain === "ollama",
+    claudeModel: String(settings.claudeModel || "claude-haiku-4-5"),
+    voicePrivacyMode: Boolean(settings.voicePrivacyMode),
+    aiModel: String(settings.aiModel || "qwen2.5:3b"),
+    ollamaUrl: String(settings.ollamaUrl || "http://localhost:11434")
+  };
+}
+
+function readSettingsForm() {
+  const saved = settingsProjection(data.settings);
+  const voiceBrain = $("#voice-brain-select")?.value || "rules";
+  return {
+    userName: $("#user-name-input")?.value.trim() || "",
+    assistantName: $("#assistant-name-input")?.value.trim() || "小光",
+    dailyBriefTime: $("#brief-time-input")?.value || "09:00",
+    notificationsEnabled: Boolean($("#notifications-toggle")?.checked),
+    launchAtLogin: Boolean($("#launch-toggle")?.checked),
+    voiceAutoListen: Boolean($("#voice-auto-listen-toggle")?.checked),
+    voiceReplyEnabled: Boolean($("#voice-reply-toggle")?.checked),
+    voiceAutoHide: Boolean($("#voice-auto-hide-toggle")?.checked),
+    calendarSyncEnabled: Boolean($("#calendar-sync-toggle")?.checked),
+    reminderSyncEnabled: Boolean($("#reminder-sync-toggle")?.checked),
+    calendarId: $("#calendar-select")?.value || saved.calendarId,
+    reminderListId: $("#reminder-list-select")?.value || saved.reminderListId,
+    voiceBrain,
+    aiVoiceEnabled: voiceBrain === "ollama",
+    claudeModel: $("#claude-model-input")?.value.trim() || "claude-haiku-4-5",
+    voicePrivacyMode: Boolean($("#voice-privacy-toggle")?.checked),
+    aiModel: $("#ai-model-input")?.value.trim() || "qwen2.5:3b",
+    ollamaUrl: $("#ollama-url-input")?.value.trim() || "http://localhost:11434"
+  };
+}
+
+function hydrateSettingsForm() {
+  const settings = settingsProjection(data.settings);
+  $("#user-name-input").value = settings.userName;
+  $("#assistant-name-input").value = settings.assistantName;
+  $("#brief-time-input").value = settings.dailyBriefTime;
+  $("#notifications-toggle").checked = settings.notificationsEnabled;
+  $("#launch-toggle").checked = settings.launchAtLogin;
+  $("#voice-shortcut-input").value = data.settings.voiceShortcut || "Alt+Space";
+  $("#voice-auto-listen-toggle").checked = settings.voiceAutoListen;
+  $("#voice-reply-toggle").checked = settings.voiceReplyEnabled;
+  $("#voice-auto-hide-toggle").checked = settings.voiceAutoHide;
+  $("#voice-brain-select").value = settings.voiceBrain;
+  $("#claude-model-input").value = settings.claudeModel;
+  $("#voice-privacy-toggle").checked = settings.voicePrivacyMode;
+  $("#ai-model-input").value = settings.aiModel;
+  $("#ollama-url-input").value = settings.ollamaUrl;
+  $("#calendar-sync-toggle").checked = settings.calendarSyncEnabled;
+  $("#reminder-sync-toggle").checked = settings.reminderSyncEnabled;
+}
+
+function setSettingsSaveStatus(message, tone = "") {
+  const status = $("#settings-save-status");
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle("saving", tone === "saving");
+  status.classList.toggle("saved", tone === "saved");
+  status.classList.toggle("error", tone === "error");
+}
+
+function updateSettingsDirtyState() {
+  if (!settingsHydrated) return;
+  settingsDirty = !valuesEqual(readSettingsForm(), settingsProjection(data.settings));
+  const saveButton = $("#save-settings-button");
+  if (saveButton) saveButton.disabled = !settingsDirty;
+  setSettingsSaveStatus(
+    settingsDirty ? "有尚未儲存的變更" : "所有變更都已儲存",
+    settingsDirty ? "saving" : "saved"
+  );
+  const brain = $("#voice-brain-select")?.value || resolveVoiceBrain();
+  $("#voice-brain-badge").textContent =
+    brain === "claude" ? "Claude 雲端" : brain === "ollama" ? "Ollama 本地" : "規則式";
+}
+
+function activateSettingsSection(name, { focus = false } = {}) {
+  if (!SETTINGS_SECTIONS.includes(name)) name = "general";
+  activeSettingsSection = name;
+  $$("#settings-tabs [data-settings-tab]").forEach((tab) => {
+    const active = tab.dataset.settingsTab === name;
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    if (active && focus) tab.focus({ preventScroll: true });
+  });
+  $$("[data-settings-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.settingsPanel !== name;
+  });
+  const tablist = $("#settings-tabs");
+  if (tablist) {
+    tablist.setAttribute("aria-orientation", window.innerWidth <= 1000 ? "horizontal" : "vertical");
+  }
 }
 
 function renderSettings() {
-  // 使用者正在設定頁編輯時，跳過回填，避免覆蓋輸入 / 游標跳動
-  const focused = document.activeElement;
-  if (
-    focused &&
-    focused.closest &&
-    focused.closest(".settings-panel") &&
-    ["INPUT", "SELECT", "TEXTAREA"].includes(focused.tagName)
-  ) {
-    $("#brand-name").textContent = data.settings.assistantName || "小光";
-    return;
+  if (!settingsDirty) {
+    hydrateSettingsForm();
+    settingsHydrated = true;
   }
-
-  $("#user-name-input").value = data.settings.userName || "";
-  $("#assistant-name-input").value = data.settings.assistantName || "小光";
-  $("#brief-time-input").value = data.settings.dailyBriefTime || "09:00";
-  $("#notifications-toggle").checked = data.settings.notificationsEnabled !== false;
-  $("#launch-toggle").checked = Boolean(data.settings.launchAtLogin);
-  $("#voice-shortcut-input").value = data.settings.voiceShortcut || "Alt+Space";
-  $("#voice-auto-listen-toggle").checked = data.settings.voiceAutoListen !== false;
-  $("#voice-reply-toggle").checked = data.settings.voiceReplyEnabled !== false;
-  $("#voice-auto-hide-toggle").checked = data.settings.voiceAutoHide !== false;
-  const brain = resolveVoiceBrain();
-  $("#voice-brain-select").value = brain;
-  $("#voice-brain-badge").textContent =
-    brain === "claude" ? "Claude 雲端" : brain === "ollama" ? "Ollama 本地" : "規則式";
-  $("#claude-model-input").value = data.settings.claudeModel || "claude-haiku-4-5";
-  $("#voice-privacy-toggle").checked = Boolean(data.settings.voicePrivacyMode);
-  $("#ai-model-input").value = data.settings.aiModel || "qwen2.5:3b";
-  $("#ollama-url-input").value = data.settings.ollamaUrl || "http://localhost:11434";
-  $("#calendar-sync-toggle").checked = Boolean(data.settings.calendarSyncEnabled);
-  $("#reminder-sync-toggle").checked = Boolean(data.settings.reminderSyncEnabled);
-  renderCalendarOptions();
+  renderCalendarOptions({ preserveSelection: settingsDirty });
   renderCalendarSyncStatus();
   renderSyncHealth();
+  const brain = settingsDirty
+    ? $("#voice-brain-select").value
+    : resolveVoiceBrain();
+  $("#voice-brain-badge").textContent =
+    brain === "claude" ? "Claude 雲端" : brain === "ollama" ? "Ollama 本地" : "規則式";
+  activateSettingsSection(activeSettingsSection);
+  const saveButton = $("#save-settings-button");
+  if (saveButton) saveButton.disabled = !settingsDirty;
+  if (!settingsDirty) setSettingsSaveStatus("所有變更都已儲存", "saved");
   $("#brand-name").textContent = data.settings.assistantName || "小光";
 }
 
@@ -997,17 +1433,23 @@ function renderSelectOptions(select, items, selectedValue, emptyLabel) {
   if (items.some((item) => item.id === selectedValue)) select.value = selectedValue;
 }
 
-function renderCalendarOptions() {
+function renderCalendarOptions({ preserveSelection = false } = {}) {
+  const calendarSelection = preserveSelection
+    ? $("#calendar-select")?.value || data.settings.calendarId || ""
+    : data.settings.calendarId || "";
+  const reminderSelection = preserveSelection
+    ? $("#reminder-list-select")?.value || data.settings.reminderListId || ""
+    : data.settings.reminderListId || "";
   renderSelectOptions(
     $("#calendar-select"),
     calendarStatus?.calendars || [],
-    data.settings.calendarId || "",
+    calendarSelection,
     "尚未取得行事曆"
   );
   renderSelectOptions(
     $("#reminder-list-select"),
     calendarStatus?.reminderLists || [],
-    data.settings.reminderListId || "",
+    reminderSelection,
     "尚未取得提醒事項"
   );
 }
@@ -1056,8 +1498,8 @@ function renderCalendarSyncStatus() {
 function syncHealthCard(title, state, detail, tone = "") {
   return `
     <article class="sync-health-card ${tone}">
-      <span class="sync-health-state">${escapeHtml(state)}</span>
       <strong>${escapeHtml(title)}</strong>
+      <span class="sync-health-state">${escapeHtml(state)}</span>
       <p>${escapeHtml(detail)}</p>
     </article>
   `;
@@ -1258,6 +1700,8 @@ function updateEndDateHint() {
 }
 
 function loadJournalEditor(date) {
+  if (!parseDate(date)) date = localDateKey();
+  activeJournalDate = date;
   const entry = data.journal[date] || {};
   $("#journal-date").value = date;
   $("#journal-done").value = entry.done || "";
@@ -1269,7 +1713,33 @@ function loadJournalEditor(date) {
     button.classList.toggle("active", isActive);
     button.setAttribute("aria-pressed", String(isActive));
   });
-  $("#full-journal-status").textContent = "尚未修改";
+  const draft = journalDrafts.get(date);
+  setJournalStatus(date, draft?.state || "saved");
+}
+
+function refreshJournalEditorFromData(date = activeJournalDate) {
+  if (!date || activeJournalDate !== date) return;
+  const entry = data.journal?.[date] || {};
+  const draft = journalDrafts.get(date);
+  const fieldMap = {
+    done: "#journal-done",
+    feeling: "#journal-feeling",
+    tomorrow: "#journal-tomorrow"
+  };
+  for (const [field, selector] of Object.entries(fieldMap)) {
+    if (Object.prototype.hasOwnProperty.call(draft?.patch || {}, field)) continue;
+    const input = $(selector);
+    if (input && document.activeElement !== input) input.value = entry[field] || "";
+  }
+  if (!Object.prototype.hasOwnProperty.call(draft?.patch || {}, "mood")) {
+    selectedMood = entry.mood || "";
+    $$("#mood-picker button").forEach((button) => {
+      const active = button.dataset.mood === selectedMood;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+  }
+  setJournalStatus(date, draft?.state || "saved");
 }
 
 async function handleTaskAction(event) {
@@ -1325,6 +1795,32 @@ function restoreDialogFocus(candidate) {
 }
 
 function wireEvents() {
+  on("#settings-tabs", "click", (event) => {
+    const tab = event.target.closest("[data-settings-tab]");
+    if (tab) activateSettingsSection(tab.dataset.settingsTab);
+  });
+  on("#settings-tabs", "keydown", (event) => {
+    const tab = event.target.closest("[data-settings-tab]");
+    if (!tab) return;
+    const currentIndex = SETTINGS_SECTIONS.indexOf(tab.dataset.settingsTab);
+    let nextIndex = currentIndex;
+    if (["ArrowRight", "ArrowDown"].includes(event.key)) nextIndex = (currentIndex + 1) % SETTINGS_SECTIONS.length;
+    else if (["ArrowLeft", "ArrowUp"].includes(event.key)) nextIndex = (currentIndex - 1 + SETTINGS_SECTIONS.length) % SETTINGS_SECTIONS.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = SETTINGS_SECTIONS.length - 1;
+    else return;
+    event.preventDefault();
+    activateSettingsSection(SETTINGS_SECTIONS[nextIndex], { focus: true });
+  });
+  const handleSettingsDraftChange = (event) => {
+    if (["claude-key-input", "voice-shortcut-input"].includes(event.target?.id)) return;
+    updateSettingsDirtyState();
+  };
+  on("#settings-workspace", "input", handleSettingsDraftChange);
+  on("#settings-workspace", "change", handleSettingsDraftChange);
+  on(window, "resize", () => {
+    if (activeRoute === "settings") activateSettingsSection(activeSettingsSection);
+  });
   on("#nav", "click", (event) => {
     const button = event.target.closest("[data-route]");
     if (button) navigate(button.dataset.route, { focusHeading: event.detail === 0 });
@@ -1481,6 +1977,12 @@ function wireEvents() {
   on("#all-task-list", "click", handleTaskAction);
   on("#week-board", "click", handleTaskAction);
   on("#month-grid", "click", handleMonthClick);
+  on("#month-view-mode", "click", (event) => {
+    const button = event.target.closest("[data-month-view]");
+    if (!button || !["focus", "all"].includes(button.dataset.monthView)) return;
+    monthViewMode = button.dataset.monthView;
+    renderMonth();
+  });
   on("#month-prev", "click", () => {
     monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1);
     renderMonth();
@@ -1555,26 +2057,14 @@ function wireEvents() {
     }
   });
 
-  on("#today-quick-journal", "input", () => {
-    $("#journal-save-status").textContent = "正在保存…";
-    clearTimeout(quickJournalTimer);
-    quickJournalTimer = setTimeout(async () => {
-      const today = localDateKey();
-      data.journal[today] = {
-        ...(data.journal[today] || {}),
-        done: $("#today-quick-journal").value,
-        updatedAt: new Date().toISOString()
-      };
-      try {
-        await persist();
-        $("#journal-save-status").textContent = "已自動保存";
-      } catch {
-        $("#journal-save-status").textContent = "尚未保存，請再輸入一次";
-      }
-    }, 500);
+  on("#today-quick-journal", "input", (event) => {
+    stageJournalPatch(localDateKey(), { done: event.target.value });
   });
 
-  on("#journal-date", "change", (event) => loadJournalEditor(event.target.value));
+  on("#journal-date", "change", (event) => {
+    void flushJournalAutosave();
+    loadJournalEditor(event.target.value);
+  });
   on("#mood-picker", "click", (event) => {
     const button = event.target.closest("[data-mood]");
     if (!button) return;
@@ -1584,57 +2074,86 @@ function wireEvents() {
       item.classList.toggle("active", isActive);
       item.setAttribute("aria-pressed", String(isActive));
     });
-    $("#full-journal-status").textContent = "尚未保存";
+    stageJournalPatch(activeJournalDate || $("#journal-date").value, { mood: selectedMood });
   });
-  $$(".journal-editor textarea").forEach((input) =>
-    on(input, "input", () => {
-      $("#full-journal-status").textContent = "尚未保存";
-    })
-  );
+  const journalFields = {
+    "journal-done": "done",
+    "journal-feeling": "feeling",
+    "journal-tomorrow": "tomorrow"
+  };
+  $$(".journal-editor textarea").forEach((input) => {
+    on(input, "input", (event) => {
+      const field = journalFields[event.target.id];
+      if (field) {
+        stageJournalPatch(activeJournalDate || $("#journal-date").value, {
+          [field]: event.target.value
+        });
+      }
+    });
+  });
   on("#save-journal-button", "click", async () => {
     const date = $("#journal-date").value;
-    data.journal[date] = {
-      done: $("#journal-done").value.trim(),
-      feeling: $("#journal-feeling").value.trim(),
-      tomorrow: $("#journal-tomorrow").value.trim(),
-      mood: selectedMood,
-      updatedAt: new Date().toISOString()
+    const current = data.journal[date] || {};
+    const editorValues = {
+      done: $("#journal-done").value,
+      feeling: $("#journal-feeling").value,
+      tomorrow: $("#journal-tomorrow").value,
+      mood: selectedMood
     };
-    await persist();
-    $("#full-journal-status").textContent = "已保存";
-    if (date === localDateKey()) $("#today-quick-journal").value = data.journal[date].done;
+    const patch = Object.fromEntries(
+      Object.entries(editorValues).filter(([field, value]) => String(current[field] || "") !== value)
+    );
+    if (Object.keys(patch).length) stageJournalPatch(date, patch);
+    const draft = journalDrafts.get(date);
+    if (draft?.state === "conflict") {
+      draft.baseEntry = cloneData(lastPersistedData?.journal?.[date] || {});
+      draft.state = "dirty";
+      setJournalStatus(date, "dirty");
+    }
+    await flushJournalAutosave();
+    if (date === localDateKey() && document.activeElement !== $("#today-quick-journal")) {
+      $("#today-quick-journal").value = data.journal[date]?.done || "";
+    }
   });
   on("#journal-history", "click", (event) => {
     const item = event.target.closest("[data-journal-date]");
-    if (item) loadJournalEditor(item.dataset.journalDate);
+    if (item) {
+      void flushJournalAutosave();
+      loadJournalEditor(item.dataset.journalDate);
+    }
   });
 
   on("#save-settings-button", "click", async () => {
-    data.settings = {
-      ...data.settings,
-      userName: $("#user-name-input").value.trim(),
-      assistantName: $("#assistant-name-input").value.trim() || "小光",
-      dailyBriefTime: $("#brief-time-input").value || "09:00",
-      notificationsEnabled: $("#notifications-toggle").checked,
-      launchAtLogin: $("#launch-toggle").checked,
-      voiceAutoListen: $("#voice-auto-listen-toggle").checked,
-      voiceReplyEnabled: $("#voice-reply-toggle").checked,
-      voiceAutoHide: $("#voice-auto-hide-toggle").checked,
-      calendarSyncEnabled: $("#calendar-sync-toggle").checked,
-      reminderSyncEnabled: $("#reminder-sync-toggle").checked,
-      calendarId: $("#calendar-select").value || data.settings.calendarId || "",
-      reminderListId: $("#reminder-list-select").value || data.settings.reminderListId || "",
-      voiceBrain: $("#voice-brain-select").value || "rules",
-      aiVoiceEnabled: $("#voice-brain-select").value === "ollama",
-      claudeModel: $("#claude-model-input").value.trim() || "claude-haiku-4-5",
-      voicePrivacyMode: $("#voice-privacy-toggle").checked,
-      aiModel: $("#ai-model-input").value.trim() || "qwen2.5:3b",
-      ollamaUrl: $("#ollama-url-input").value.trim() || "http://localhost:11434"
-    };
-    await api.setLaunchAtLogin(data.settings.launchAtLogin);
-    await persist();
-    $("#save-settings-button").textContent = "已儲存";
-    setTimeout(() => ($("#save-settings-button").textContent = "儲存設定"), 1200);
+    const snapshot = cloneData(data);
+    const previousSettings = settingsProjection(data.settings);
+    const formSettings = readSettingsForm();
+    const button = $("#save-settings-button");
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    setSettingsSaveStatus("正在儲存所有變更…", "saving");
+    data.settings = { ...data.settings, ...formSettings };
+    try {
+      const launchEnabled = await api.setLaunchAtLogin(formSettings.launchAtLogin);
+      data.settings.launchAtLogin = Boolean(launchEnabled);
+      await persist();
+      settingsDirty = false;
+      settingsHydrated = true;
+      const time = new Intl.DateTimeFormat("zh-TW", {
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(new Date());
+      setSettingsSaveStatus(`已儲存 ${time}`, "saved");
+      $("#brand-name").textContent = data.settings.assistantName || "小光";
+    } catch (error) {
+      data = overlayJournalDrafts(snapshot);
+      settingsDirty = true;
+      setSettingsSaveStatus("儲存失敗，畫面上的變更仍保留", "error");
+      try { await api.setLaunchAtLogin(previousSettings.launchAtLogin); } catch {}
+      console.error("設定保存失敗：", error);
+    } finally {
+      button.removeAttribute("aria-busy");
+      button.disabled = !settingsDirty;
+    }
   });
   on("#save-voice-shortcut-button", "click", async () => {
     const input = $("#voice-shortcut-input");
@@ -1760,6 +2279,7 @@ function wireEvents() {
   on("#open-accounts-button", "click", () => api.openInternetAccounts());
   on("#connect-calendar-button", "click", async () => {
     const button = $("#connect-calendar-button");
+    const snapshot = cloneData(data);
     button.disabled = true;
     button.textContent = "等待系統授權…";
     try {
@@ -1778,6 +2298,7 @@ function wireEvents() {
       }
       await persist();
     } catch (error) {
+      data = overlayJournalDrafts(snapshot);
       data.sync = { ...(data.sync || {}), lastSyncError: error.message };
       renderCalendarSyncStatus();
     } finally {
@@ -1787,6 +2308,7 @@ function wireEvents() {
   });
   on("#sync-calendar-button", "click", async () => {
     const button = $("#sync-calendar-button");
+    const snapshot = cloneData(data);
     data.settings = {
       ...data.settings,
       calendarSyncEnabled: $("#calendar-sync-toggle").checked,
@@ -1794,19 +2316,22 @@ function wireEvents() {
       calendarId: $("#calendar-select").value || data.settings.calendarId || "",
       reminderListId: $("#reminder-list-select").value || data.settings.reminderListId || ""
     };
-    await persist();
     button.disabled = true;
     button.textContent = "同步中…";
     try {
+      await persist();
+      updateSettingsDirtyState();
       data = rememberServerData(await api.syncCalendars());
       calendarStatus = await api.getCalendarStatus();
     } catch (error) {
+      data = overlayJournalDrafts(snapshot);
       data.sync = { ...(data.sync || {}), lastSyncError: error.message };
+      setInlineStatus("#calendar-sync-status", `同步失敗：${error.message}`, "error");
     } finally {
       button.disabled = false;
       button.textContent = "立即同步";
       try {
-        renderCalendarOptions();
+        renderCalendarOptions({ preserveSelection: settingsDirty });
         renderCalendarSyncStatus();
         renderSyncHealth();
       } catch (error) {
@@ -1814,6 +2339,13 @@ function wireEvents() {
       }
     }
   });
+  on(document, "visibilitychange", () => {
+    if (document.visibilityState === "hidden") void flushJournalAutosave();
+  });
+  on(window, "blur", () => {
+    void flushJournalAutosave();
+  });
+  on(window, "beforeunload", flushJournalBeforeUnload);
 }
 
 async function init() {
@@ -1847,7 +2379,8 @@ async function init() {
   listenApi("onDataChanged", (nextData) => {
     rememberServerData(nextData);
     if (pendingPersistCount === 0 && lastPersistedData) {
-      data = cloneData(lastPersistedData);
+      data = overlayJournalDrafts(lastPersistedData);
+      if (activeRoute === "journal") refreshJournalEditorFromData();
       scheduleRender();
     }
   });

@@ -44,6 +44,7 @@ function createStore(userDataPath, { onRecovery } = {}) {
   const dataPath = path.join(userDataPath, "assistant-data.json");
   let cached = null;
   let writeTimer = null;
+  let writeRetryCount = 0;
   const WRITE_DEBOUNCE_MS = 350;
 
   function normalize(parsed) {
@@ -72,33 +73,38 @@ function createStore(userDataPath, { onRecovery } = {}) {
   }
 
   function flushToDisk(data) {
+    fs.mkdirSync(path.dirname(dataPath), { recursive: true });
+    const tempPath = `${dataPath}.tmp`;
+    const fd = fs.openSync(tempPath, "w");
     try {
-      fs.mkdirSync(path.dirname(dataPath), { recursive: true });
-      const tempPath = `${dataPath}.tmp`;
-      const fd = fs.openSync(tempPath, "w");
-      try {
-        fs.writeFileSync(fd, JSON.stringify(data), "utf8");
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      try { fs.copyFileSync(dataPath, `${dataPath}.bak`); } catch {}
-      fs.renameSync(tempPath, dataPath);
-      try {
-        const directoryFd = fs.openSync(path.dirname(dataPath), "r");
-        try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
-      } catch {}
-    } catch (error) {
-      console.error("Failed to persist assistant data:", error);
+      fs.writeFileSync(fd, JSON.stringify(data), "utf8");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
     }
+    try { fs.copyFileSync(dataPath, `${dataPath}.bak`); } catch {}
+    fs.renameSync(tempPath, dataPath);
+    try {
+      const directoryFd = fs.openSync(path.dirname(dataPath), "r");
+      try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
+    } catch {}
   }
 
-  function scheduleWrite(data) {
+  function scheduleWrite(data, delay = WRITE_DEBOUNCE_MS) {
     if (writeTimer) clearTimeout(writeTimer);
     writeTimer = setTimeout(() => {
       writeTimer = null;
-      flushToDisk(data);
-    }, WRITE_DEBOUNCE_MS);
+      try {
+        flushToDisk(data);
+        writeRetryCount = 0;
+      } catch (error) {
+        console.error("Failed to persist assistant data:", error);
+        writeRetryCount += 1;
+        if (writeRetryCount <= 3) {
+          scheduleWrite(cached || data, Math.min(4000, 500 * (2 ** writeRetryCount)));
+        }
+      }
+    }, delay);
   }
 
   function read() {
@@ -135,21 +141,53 @@ function createStore(userDataPath, { onRecovery } = {}) {
     return structuredClone(cached);
   }
 
+  function writeDurable(data) {
+    const previous = cached ? structuredClone(cached) : read();
+    const previousRevision = Number.isInteger(previous?.revision)
+      ? previous.revision
+      : Number(data?.revision) || 0;
+    const candidate = { ...normalize(data), revision: previousRevision + 1 };
+    const hadPendingWrite = Boolean(writeTimer);
+    if (writeTimer) {
+      clearTimeout(writeTimer);
+      writeTimer = null;
+    }
+    try {
+      flushToDisk(candidate);
+      cached = candidate;
+      writeRetryCount = 0;
+      return structuredClone(cached);
+    } catch (error) {
+      cached = previous;
+      if (hadPendingWrite) scheduleWrite(cached);
+      throw error;
+    }
+  }
+
   function update(updater) {
     const current = read();
     return write(updater(current));
   }
 
-  function flush() {
+  function flush({ throwOnError = false } = {}) {
     // Force immediate persist (useful before quit or explicit sync)
     if (writeTimer) {
       clearTimeout(writeTimer);
       writeTimer = null;
     }
-    if (cached) flushToDisk(cached);
+    if (!cached) return true;
+    try {
+      flushToDisk(cached);
+      writeRetryCount = 0;
+      return true;
+    } catch (error) {
+      if (throwOnError) throw error;
+      console.error("Failed to persist assistant data:", error);
+      return false;
+    }
   }
 
-  return { read, write, update, dataPath, flush };
+  return { read, write, writeDurable, update, dataPath, flush };
 }
 
 module.exports = { createStore, DEFAULT_DATA };
