@@ -1,3 +1,28 @@
+# Personal Assistant for macOS（貼身小秘書）
+
+A small macOS desktop assistant for to-dos, schedule and a daily journal, with a voice shortcut and sync to Apple Reminders and iCloud / Google Calendar. The UI is in Traditional Chinese.
+
+- **Voice:** press `⌥ Space` and say what you want: add a to-do, write a journal entry, ask what's on today. By default, commands are parsed with built-in rules. In settings you can switch to a local model through Ollama (default `qwen2.5:3b`), so voice text still stays on the machine.
+- **Native helpers in Swift:** `native/VoiceRecognizer.swift` (speech recognition) and `native/CalendarBridge.swift` (EventKit for Reminders and Calendar), bundled inside the Electron app.
+- **Sync that doesn't overwrite your edits:** when the UI, voice and background sync change the same item, fields are merged one by one (three-way). A real conflict on the same field is reported instead of silently overwritten. Saves are atomic, with a backup and recovery from a corrupted file.
+- **Everyday details:** global search (`⌘F`), keyboard navigation, screen-reader labels, reduced motion, a daily morning summary, launch at login.
+
+**Stack:** Electron, vanilla JS (about 11,000 lines in `src/`), Swift (about 1,100 lines), Ollama.
+
+**Tests:** seven Node test scripts under `scripts/` (voice commands, calendar sync, store durability, month view performance, journal merge, sync coordinator, concurrent merge). Run them with `npm run test:voice`, `npm run test:calendar` and so on.
+
+**History:** the git history starts at a v1.3.1 baseline. It then shows a full code health check (`CODEX_修復指令書.md`: 52 findings, each checked by a separate reviewer), the P0–P3 fixes, and the v1.4 → v1.6 upgrades. I directed the work and checked it against the tests. Most of the code was written with AI coding tools (Claude Code, Codex).
+
+```bash
+npm install
+npm run build:helpers   # builds the Swift helpers (needs Xcode command line tools)
+npm start
+```
+
+License: MIT
+
+---
+
 # 貼身小秘書
 
 > 原始碼一律位於 `src/`；請勿在專案根目錄建立 `main.js`、`voice.js` 或 `index.html` 複本。
